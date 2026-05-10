@@ -1006,29 +1006,109 @@ export class WorkflowExecutionService {
   }
 
   /**
-   * Helper: Recursively render template variables in any JSON-shaped value.
-   * Strings are rendered, arrays/objects are walked, and non-string scalars
-   * (numbers, booleans, null) are returned untouched.
+   * Apply a parsed `updates` map onto the contact's existing `data` blob.
+   * Plain values are assigned; `{increment|decrement}` operator objects
+   * read the current value (defaulting to 0 when missing) and apply
+   * arithmetic. Throws on non-numeric existing values rather than
+   * silently coercing.
    */
-  private static renderJsonTemplate(value: unknown, variables: Record<string, unknown>): unknown {
-    if (typeof value === 'string') {
-      return this.renderTemplate(value, variables);
-    }
-    if (Array.isArray(value)) {
-      return value.map(item => this.renderJsonTemplate(item, variables));
-    }
-    if (value !== null && typeof value === 'object') {
-      const result: Record<string, unknown> = {};
-      for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-        result[key] = this.renderJsonTemplate(child, variables);
+  private static applyContactDataUpdates(
+    currentData: Record<string, unknown>,
+    updates: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const next: Record<string, unknown> = {...currentData};
+
+    for (const [field, raw] of Object.entries(updates)) {
+      const operator = WorkflowExecutionService.detectArithmeticOperator(raw);
+
+      if (operator === null) {
+        next[field] = raw;
+        continue;
       }
-      return result;
+
+      const existing = next[field];
+      const base = existing === undefined || existing === null ? 0 : existing;
+
+      if (typeof base !== 'number' || !Number.isFinite(base)) {
+        throw new Error(
+          `UPDATE_CONTACT: cannot ${operator.op} non-numeric field "${field}" ` +
+            `(current value: ${JSON.stringify(existing)})`,
+        );
+      }
+
+      next[field] = operator.op === 'increment' ? base + operator.amount : base - operator.amount;
     }
-    return value;
+
+    return next;
+  }
+
+  /**
+   * If `value` is an arithmetic operator object (`{increment: N}` or
+   * `{decrement: N}`), return its normalized form. Otherwise return null
+   * — caller treats it as a plain assignment value.
+   *
+   * The schema already guarantees mutual exclusivity, but we re-check
+   * defensively in case the executor is invoked with a pre-parsed config.
+   */
+  private static detectArithmeticOperator(
+    value: unknown,
+  ): {op: 'increment' | 'decrement'; amount: number} | null {
+    if (
+      value === null ||
+      typeof value !== 'object' ||
+      Array.isArray(value) ||
+      value instanceof Date
+    ) {
+      return null;
+    }
+
+    const candidate = value as Record<string, unknown>;
+    const keys = Object.keys(candidate);
+
+    if (keys.length !== 1) return null;
+    if (keys[0] !== 'increment' && keys[0] !== 'decrement') return null;
+
+    const amount = candidate[keys[0]];
+    if (typeof amount !== 'number' || !Number.isFinite(amount)) return null;
+
+    return {op: keys[0] as 'increment' | 'decrement', amount};
   }
 
   /**
    * UPDATE_CONTACT step - Update contact data
+   *
+   * Each entry in `updates` is one of:
+   *   - a primitive / array / object → assigned directly to `data[field]`
+   *   - `{increment: N}` → `data[field] = (data[field] ?? 0) + N`
+   *   - `{decrement: N}` → `data[field] = (data[field] ?? 0) - N`
+   *
+   * Arithmetic operators target the JSON `data` blob only (not top-level
+   * Contact columns). A non-numeric existing value throws — we never
+   * silently coerce. Negative results are allowed; lead scores can
+   * legitimately drop below zero.
+   *
+   * ## Concurrency: read-modify-write race (lost updates)
+   *
+   * The arithmetic path is **non-atomic**: we read `contact.data.<field>`
+   * from the in-memory `execution.contact` (loaded earlier in the step),
+   * compute `current ± delta` in JS, and write the whole `data` blob back
+   * via `prisma.contact.update`. Two workflow executions racing on the
+   * same contact + field can both read the same starting value and the
+   * second write clobbers the first — a classic lost-update.
+   *
+   * This is **acceptable for the lead-scoring use case** this feature
+   * targets: drift is bounded (at most one increment lost per collision),
+   * collisions on the same contact are rare in practice, and the signal
+   * is statistical — segments and thresholds tolerate small noise. We
+   * explicitly chose not to pay the complexity cost (row lock, retry
+   * loop, or raw SQL) for a use case that doesn't need exactness.
+   *
+   * **Future work** if a use case ever needs atomicity: replace the
+   * read-modify-write with a single `UPDATE contact SET data =
+   * jsonb_set(data, '{field}', (COALESCE((data->>'field')::numeric, 0)
+   * + $delta)::text::jsonb) WHERE id = $id` via `prisma.$executeRaw`.
+   * That pushes the arithmetic into Postgres so concurrent updates
+   * serialize on the row lock instead of racing in application memory.
    */
   private static async executeUpdateContact(
     _step: WorkflowStep,
@@ -1045,7 +1125,9 @@ export class WorkflowExecutionService {
         : {};
 
     const hasDataUpdates = updates && Object.keys(updates).length > 0;
-    const newData = hasDataUpdates ? {...currentData, ...updates} : currentData;
+    const newData = hasDataUpdates
+      ? WorkflowExecutionService.applyContactDataUpdates(currentData, updates)
+      : currentData;
 
     const desiredSubscribed =
       subscriptionAction === 'subscribe' ? true : subscriptionAction === 'unsubscribe' ? false : undefined;

@@ -348,7 +348,42 @@ export const WorkflowStepConfigSchemas = {
   }),
   updateContact: z
     .object({
-      updates: z.record(z.any()).optional(),
+      updates: z
+        .record(
+          z
+            .any()
+            // Either: a primitive / array / "regular" object (direct
+            // assignment, existing behavior) — OR a well-formed arithmetic
+            // operator object containing exactly one of `increment` or
+            // `decrement` whose value is a finite number. Anything that
+            // *looks* like an operator object (has those keys) but is
+            // malformed (both keys, empty `{}`, non-numeric value, extra
+            // keys alongside) is rejected here so the executor can rely
+            // on a clean shape.
+            .refine(
+              value => {
+                if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+                  return true;
+                }
+                const candidate = value as Record<string, unknown>;
+                const hasIncrement = Object.prototype.hasOwnProperty.call(candidate, 'increment');
+                const hasDecrement = Object.prototype.hasOwnProperty.call(candidate, 'decrement');
+                if (!hasIncrement && !hasDecrement) return true;
+                // Operator-shaped: enforce strict form.
+                if (hasIncrement && hasDecrement) return false;
+                const keys = Object.keys(candidate);
+                if (keys.length !== 1) return false;
+                const onlyKey = keys[0] as string;
+                const amount = candidate[onlyKey];
+                return typeof amount === 'number' && Number.isFinite(amount);
+              },
+              {
+                message:
+                  'Arithmetic operator must be exactly `{increment: number}` or `{decrement: number}`',
+              },
+            ),
+        )
+        .optional(),
       subscriptionAction: z.enum(['none', 'subscribe', 'unsubscribe']).optional(),
     })
     .refine(
