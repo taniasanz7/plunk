@@ -1,7 +1,14 @@
 import {beforeEach, describe, expect, it, vi} from 'vitest';
 import {CampaignAudienceType, CampaignStatus} from '@plunk/db';
+import dayjs from 'dayjs';
+import timezonePlugin from 'dayjs/plugin/timezone.js';
+import utcPlugin from 'dayjs/plugin/utc.js';
 import {CampaignService} from '../CampaignService';
+import {QueueService} from '../QueueService';
 import {factories, getPrismaClient} from '../../../../../test/helpers';
+
+dayjs.extend(utcPlugin);
+dayjs.extend(timezonePlugin);
 
 // Mock STRIPE_ENABLED for billing limit tests
 vi.mock('../../app/constants.js', async () => {
@@ -587,6 +594,154 @@ describe('CampaignService', () => {
       expect(scheduledCampaign.status).toBe(CampaignStatus.SCHEDULED);
       expect(scheduledCampaign.scheduledFor).toEqual(scheduledFor);
       expect(scheduledCampaign.totalRecipients).toBe(10);
+    });
+  });
+
+  // ============================================================================
+  // Patch #11: Campaign.sendAtLocal — per-recipient local-time fan-out
+  // ============================================================================
+  describe('send (sendAtLocal, Patch #11)', () => {
+    /**
+     * Helper: spy on QueueService.scheduleCampaign and capture per-tz fan-out calls.
+     */
+    function spyOnSchedule() {
+      return vi.spyOn(QueueService, 'scheduleCampaign').mockImplementation(async () => {
+        return {id: 'mock-job'} as any;
+      });
+    }
+
+    it('rejects providing both scheduledFor and sendAtLocal', async () => {
+      await factories.createContact({projectId, subscribed: true, timezone: 'Europe/Madrid'});
+      const campaign = await factories.createCampaign({
+        projectId,
+        status: CampaignStatus.DRAFT,
+        audienceType: CampaignAudienceType.ALL,
+      });
+
+      const scheduledFor = new Date(Date.now() + 60 * 60 * 1000);
+
+      await expect(
+        CampaignService.send(projectId, campaign.id, scheduledFor, '07:00'),
+      ).rejects.toThrow(/exactly one/i);
+    });
+
+    it('fans out one queued job per distinct contact timezone', async () => {
+      const spy = spyOnSchedule();
+      try {
+        // Three timezone groups (Madrid x40, NY x30, null/UTC x30) totalling 100.
+        const tzPlan: Array<{tz: string | null; count: number}> = [
+          {tz: 'Europe/Madrid', count: 40},
+          {tz: 'America/New_York', count: 30},
+          {tz: null, count: 30},
+        ];
+        const prismaClient = getPrismaClient();
+        for (const group of tzPlan) {
+          await prismaClient.contact.createMany({
+            data: Array.from({length: group.count}, (_, i) => ({
+              projectId,
+              email: `c-${group.tz ?? 'null'}-${i}@example.com`,
+              subscribed: true,
+              timezone: group.tz,
+            })),
+          });
+        }
+
+        const campaign = await factories.createCampaign({
+          projectId,
+          status: CampaignStatus.DRAFT,
+          audienceType: CampaignAudienceType.ALL,
+        });
+
+        const result = await CampaignService.send(projectId, campaign.id, undefined, '07:00');
+        expect(result.status).toBe(CampaignStatus.SCHEDULED);
+        // sendAtLocal is persisted on the row; absolute scheduledFor is cleared.
+        expect((result as any).sendAtLocal).toBe('07:00');
+        expect(result.scheduledFor).toBeNull();
+        expect(result.totalRecipients).toBe(100);
+
+        // One QueueService.scheduleCampaign call per distinct timezone (3 groups).
+        expect(spy).toHaveBeenCalledTimes(3);
+
+        // Inspect the per-call args. Each call: (campaignId, fireAt: Date, tzFilter: string).
+        const callsByTz = new Map<string, Date>();
+        for (const call of spy.mock.calls) {
+          const [cid, fireAt, tzFilter] = call;
+          expect(cid).toBe(campaign.id);
+          expect(fireAt).toBeInstanceOf(Date);
+          callsByTz.set(String(tzFilter), fireAt as Date);
+        }
+        expect([...callsByTz.keys()].sort()).toEqual(
+          ['America/New_York', 'Europe/Madrid', '__null__'],
+        );
+
+        // Spot-check the per-tz UTC instants. Each fireAt should be in the future and
+        // correspond to "07:00 in that tz" (today or tomorrow), specifically.
+        const now = new Date();
+        for (const [tzKey, fireAt] of callsByTz) {
+          const zone = tzKey === '__null__' ? 'UTC' : tzKey;
+          const local = dayjs(fireAt).tz(zone);
+          expect(local.hour()).toBe(7);
+          expect(local.minute()).toBe(0);
+          expect(fireAt.getTime()).toBeGreaterThan(now.getTime());
+        }
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('schedules across the spring-forward DST boundary (Europe/Madrid 2026-03-29)', async () => {
+      const spy = spyOnSchedule();
+      try {
+        // Use vitest fake timers to fix "now" at Saturday 2026-03-28 14:00 UTC,
+        // so "next 07:00 Madrid local" lands on Sunday morning crossing the DST jump.
+        // EU DST 2026 spring-forward: Sunday 2026-03-29, 02:00 CET -> 03:00 CEST at 01:00 UTC.
+        // Asking for "07:00 Madrid" today (Sat) -> tomorrow 07:00 Madrid CEST = 05:00 UTC.
+        const fakeNow = new Date('2026-03-28T14:00:00Z');
+        vi.useFakeTimers();
+        vi.setSystemTime(fakeNow);
+
+        await factories.createContact({projectId, subscribed: true, timezone: 'Europe/Madrid'});
+
+        const campaign = await factories.createCampaign({
+          projectId,
+          status: CampaignStatus.DRAFT,
+          audienceType: CampaignAudienceType.ALL,
+        });
+
+        await CampaignService.send(projectId, campaign.id, undefined, '07:00');
+        expect(spy).toHaveBeenCalledTimes(1);
+        const [, fireAt, tzFilter] = spy.mock.calls[0]!;
+        expect(tzFilter).toBe('Europe/Madrid');
+        // 2026-03-29 07:00 Madrid CEST (UTC+2) = 05:00 UTC.
+        expect((fireAt as Date).toISOString()).toBe('2026-03-29T05:00:00.000Z');
+      } finally {
+        vi.useRealTimers();
+        spy.mockRestore();
+      }
+    });
+
+    it('treats null Contact.timezone as UTC for scheduling', async () => {
+      const spy = spyOnSchedule();
+      try {
+        await factories.createContact({projectId, subscribed: true, timezone: null});
+
+        const campaign = await factories.createCampaign({
+          projectId,
+          status: CampaignStatus.DRAFT,
+          audienceType: CampaignAudienceType.ALL,
+        });
+
+        await CampaignService.send(projectId, campaign.id, undefined, '23:00');
+        expect(spy).toHaveBeenCalledTimes(1);
+        const [, fireAt, tzFilter] = spy.mock.calls[0]!;
+        // Sentinel for null timezone is "__null__".
+        expect(tzFilter).toBe('__null__');
+        // The fireAt should be at exactly 23:00 UTC (today or tomorrow).
+        expect(dayjs(fireAt as Date).utc().hour()).toBe(23);
+        expect(dayjs(fireAt as Date).utc().minute()).toBe(0);
+      } finally {
+        spy.mockRestore();
+      }
     });
   });
 });

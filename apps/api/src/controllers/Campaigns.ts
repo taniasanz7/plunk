@@ -199,6 +199,15 @@ export class Campaigns {
     const auth = res.locals.auth;
     const {id} = UtilitySchemas.id.parse(req.params);
     const scheduledFor = req.body?.scheduledFor;
+    const sendAtLocal = req.body?.sendAtLocal;
+
+    // Patch #11: scheduledFor and sendAtLocal are mutually exclusive.
+    if (scheduledFor && sendAtLocal) {
+      throw new HttpException(
+        400,
+        'Provide exactly one of `scheduledFor` (absolute UTC) or `sendAtLocal` (HH:MM, per-recipient local-time fan-out)',
+      );
+    }
 
     // Parse scheduledFor if provided
     let scheduledDate: Date | undefined;
@@ -210,12 +219,23 @@ export class Campaigns {
       }
     }
 
-    const campaign = await CampaignService.send(auth.projectId, id!, scheduledDate);
+    // Validate sendAtLocal HH:MM format at the boundary; service will re-parse.
+    if (sendAtLocal !== undefined && sendAtLocal !== null) {
+      if (typeof sendAtLocal !== 'string' || !/^([0-1]?[0-9]|2[0-3]):([0-5][0-9])$/.test(sendAtLocal)) {
+        throw new HttpException(400, 'sendAtLocal must be in HH:MM 24-hour format (e.g. "07:00")');
+      }
+    }
+
+    const campaign = await CampaignService.send(auth.projectId, id!, scheduledDate, sendAtLocal ?? undefined);
 
     return res.json({
       success: true,
       data: campaign,
-      message: scheduledDate ? `Campaign scheduled for ${scheduledDate.toISOString()}` : 'Campaign is being sent',
+      message: scheduledDate
+        ? `Campaign scheduled for ${scheduledDate.toISOString()}`
+        : sendAtLocal
+          ? `Campaign scheduled for ${sendAtLocal} in each recipient's local timezone`
+          : 'Campaign is being sent',
     });
   }
 

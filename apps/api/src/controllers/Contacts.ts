@@ -1,4 +1,6 @@
 import {Controller, Delete, Get, Middleware, Patch, Post} from '@overnightjs/core';
+import type {Prisma} from '@plunk/db';
+import {ContactSchemas} from '@plunk/shared';
 import type {NextFunction, Request, Response} from 'express';
 import multer from 'multer';
 import {ContactSchemas} from '@plunk/shared';
@@ -133,17 +135,28 @@ export class Contacts {
   @CatchAsync
   public async create(req: Request, res: Response, _next: NextFunction) {
     const auth = res.locals.auth;
-    const {email, data, subscribed} = req.body;
 
-    if (!email) {
+    // Validate the body via ContactSchemas.create so timezone (if provided) is checked
+    // for IANA validity at the API boundary. We re-emit the legacy "Email is required"
+    // 400 to preserve API behavior for the missing-email case.
+    if (!req.body || !req.body.email) {
       return res.status(400).json({error: 'Email is required'});
     }
+    const {email, data, subscribed, timezone} = ContactSchemas.create.parse(req.body);
 
     // Check if contact exists before upserting
     const existingContact = await ContactService.findByEmail(auth.projectId!, email);
     const isUpdate = !!existingContact;
 
-    const contact = await ContactService.upsert(auth.projectId!, email, data, subscribed);
+    const contact = await ContactService.upsert(
+      auth.projectId!,
+      email,
+      data as Record<string, unknown> | undefined,
+      subscribed,
+      true,
+      // Patch #11: per-contact IANA timezone. null = clear; undefined = leave unchanged.
+      timezone ?? undefined,
+    );
 
     return res.status(isUpdate ? 200 : 201).json({
       ...contact,
@@ -164,13 +177,21 @@ export class Contacts {
   public async update(req: Request, res: Response, _next: NextFunction) {
     const auth = res.locals.auth;
     const contactId = req.params.id;
-    const {email, data, subscribed} = req.body;
 
     if (!contactId) {
       return res.status(400).json({error: 'Contact ID is required'});
     }
 
-    const contact = await ContactService.update(auth.projectId!, contactId, {email, data, subscribed});
+    // Validate body via ContactSchemas.update; this enforces IANA timezone validity.
+    const {email, data, subscribed, timezone} = ContactSchemas.update.parse(req.body ?? {});
+
+    const contact = await ContactService.update(auth.projectId!, contactId, {
+      email,
+      data: data as Prisma.JsonValue | undefined,
+      subscribed,
+      // Patch #11: undefined => no change, null => clear, string => set IANA tz.
+      timezone: timezone === undefined ? undefined : timezone,
+    });
 
     return res.status(200).json(contact);
   }

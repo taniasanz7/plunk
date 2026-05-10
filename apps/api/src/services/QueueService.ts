@@ -252,30 +252,62 @@ export class QueueService {
   }
 
   /**
-   * Schedule campaign for future sending
+   * Schedule campaign for future sending.
+   *
+   * @param campaignId      The campaign to send.
+   * @param scheduledFor    Absolute UTC instant at which to fire.
+   * @param timezoneFilter  Patch #11: when set, the queued job will dispatch only the
+   *                        recipients whose Contact.timezone matches this value
+   *                        (sentinel `__null__` => null timezone). Used by sendAtLocal
+   *                        fan-out: one job per distinct contact-timezone, each delayed
+   *                        to land at HH:MM in that group's local time. Undefined means
+   *                        "send to all recipients" (legacy absolute-UTC behavior).
    */
-  public static async scheduleCampaign(campaignId: string, scheduledFor: Date): Promise<Job<ScheduledCampaignJobData>> {
+  public static async scheduleCampaign(
+    campaignId: string,
+    scheduledFor: Date,
+    timezoneFilter?: string,
+  ): Promise<Job<ScheduledCampaignJobData>> {
     const delay = scheduledFor.getTime() - Date.now();
 
     return scheduledQueue.add(
       'send-scheduled-campaign',
-      {campaignId},
+      {campaignId, ...(timezoneFilter !== undefined ? {timezoneFilter} : {})},
       {
         delay: Math.max(0, delay),
-        jobId: `scheduled-campaign-${campaignId}`,
+        // Per-timezone jobs need distinct jobIds so multiple groups can coexist.
+        // Falls back to the legacy "scheduled-campaign-<id>" form when no filter is set.
+        jobId:
+          timezoneFilter !== undefined
+            ? `scheduled-campaign-${campaignId}-tz-${timezoneFilter}`
+            : `scheduled-campaign-${campaignId}`,
       },
     );
   }
 
   /**
-   * Cancel scheduled campaign
+   * Cancel scheduled campaign.
+   *
+   * Removes both the legacy non-tz job and any per-timezone fan-out jobs that may have
+   * been queued by Campaign.sendAtLocal scheduling. We can't enumerate timezone job IDs
+   * up front, so we fall back to scanning the delayed set for matching jobIds.
    */
   public static async cancelScheduledCampaign(campaignId: string): Promise<void> {
-    const jobId = `scheduled-campaign-${campaignId}`;
-    const job = await scheduledQueue.getJob(jobId);
-
+    // Legacy single-job cancel.
+    const job = await scheduledQueue.getJob(`scheduled-campaign-${campaignId}`);
     if (job) {
       await job.remove();
+    }
+
+    // Per-timezone fan-out cancel (Patch #11). Walk the delayed set; jobIds are namespaced
+    // as `scheduled-campaign-<campaignId>-tz-<tz>`. Set is small in practice (one job per
+    // distinct timezone for this campaign).
+    const delayed = await scheduledQueue.getDelayed();
+    const prefix = `scheduled-campaign-${campaignId}-tz-`;
+    for (const j of delayed) {
+      if (j.id && j.id.startsWith(prefix)) {
+        await j.remove();
+      }
     }
   }
 

@@ -111,7 +111,7 @@ export class ContactService {
    */
   public static async create(
     projectId: string,
-    data: {email: string; data?: Prisma.JsonValue; subscribed?: boolean},
+    data: {email: string; data?: Prisma.JsonValue; subscribed?: boolean; timezone?: string | null},
   ): Promise<Contact> {
     try {
       return await prisma.contact.create({
@@ -120,6 +120,8 @@ export class ContactService {
           email: data.email,
           data: data.data ?? Prisma.JsonNull,
           subscribed: data.subscribed ?? true,
+          // Patch #11: per-contact IANA timezone (validated at the API boundary).
+          ...(data.timezone !== undefined ? {timezone: data.timezone} : {}),
         },
       });
     } catch (error) {
@@ -179,7 +181,7 @@ export class ContactService {
   public static async update(
     projectId: string,
     contactId: string,
-    data: {email?: string; data?: Prisma.JsonValue; subscribed?: boolean},
+    data: {email?: string; data?: Prisma.JsonValue; subscribed?: boolean; timezone?: string | null},
   ): Promise<Contact> {
     // First verify contact exists and belongs to project
     const existing = await this.get(projectId, contactId);
@@ -201,6 +203,10 @@ export class ContactService {
     }
     if (data.subscribed !== undefined) {
       updateData.subscribed = data.subscribed;
+    }
+    // Patch #11: undefined => no change, null => clear, string => set IANA tz.
+    if (data.timezone !== undefined) {
+      updateData.timezone = data.timezone;
     }
 
     // Track subscription status change
@@ -264,6 +270,11 @@ export class ContactService {
     data?: Record<string, unknown>,
     subscribed?: boolean,
     defaultSubscribed: boolean = true,
+    // Patch #11: optional IANA timezone for the contact.
+    //   undefined => leave existing value (or null on insert) untouched.
+    //   null      => clear the field (treat as UTC downstream).
+    //   string    => set; assumed already validated by upstream zod.
+    timezone?: string | null,
   ): Promise<Contact> {
     // Find existing contact
     const existing = await prisma.contact.findFirst({
@@ -286,6 +297,8 @@ export class ContactService {
           data: {
             data: Object.keys(mergedData).length > 0 ? toPrismaJson(mergedData) : Prisma.JsonNull,
             ...(subscribed !== undefined ? {subscribed} : {}),
+            // Patch #11: persist timezone if explicitly passed.
+            ...(timezone !== undefined ? {timezone} : {}),
           },
         });
 
@@ -314,6 +327,8 @@ export class ContactService {
             email,
             data: Object.keys(mergedData).length > 0 ? toPrismaJson(mergedData) : Prisma.JsonNull,
             subscribed: subscribed ?? defaultSubscribed,
+            // Patch #11: persist timezone if explicitly passed (null is allowed).
+            ...(timezone !== undefined ? {timezone} : {}),
           },
         });
       } catch (error) {
@@ -456,9 +471,11 @@ export class ContactService {
     });
 
     // Standard fields with known types (always 100% coverage)
+    // Patch #11: timezone exposed as a standard string field (nullable; null treated as UTC).
     const standardFields = [
       {field: 'email', type: 'string' as const, coverage: 100},
       {field: 'subscribed', type: 'boolean' as const, coverage: 100},
+      {field: 'timezone', type: 'string' as const, coverage: 100},
       {field: 'createdAt', type: 'date' as const, coverage: 100},
       {field: 'updatedAt', type: 'date' as const, coverage: 100},
     ];
@@ -651,7 +668,13 @@ export class ContactService {
           AND data->${jsonField} IS NOT NULL
       `;
       contactCount = Number(result[0]?.count || 0);
-    } else if (field === 'email' || field === 'subscribed' || field === 'createdAt' || field === 'updatedAt') {
+    } else if (
+      field === 'email' ||
+      field === 'subscribed' ||
+      field === 'timezone' ||
+      field === 'createdAt' ||
+      field === 'updatedAt'
+    ) {
       // Standard fields exist on all contacts
       const result = await prisma.contact.count({where: {projectId}});
       contactCount = result;

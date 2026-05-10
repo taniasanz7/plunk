@@ -135,6 +135,11 @@ model Contact {
   // Subscription
   subscribed Boolean @default(true)
 
+  // Localization
+  // IANA timezone name (e.g. "Europe/Madrid", "America/New_York"). Null = treat as UTC.
+  // Used by Campaign.sendAtLocal scheduling and workflow DELAY steps with localTime variants.
+  timezone String?
+
   // Relations
   project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
   projectId String
@@ -151,6 +156,7 @@ model Contact {
   @@unique([projectId, email])
   @@index([projectId])
   @@index([projectId, subscribed])
+  @@index([projectId, timezone]) // Used for grouping recipients by timezone in Campaign.sendAtLocal fan-out
   @@index([data(ops: JsonbOps)], type: Gin) // GIN index for fast JSON queries on Contact.data
   @@map("contacts")
 }
@@ -303,6 +309,12 @@ model Campaign {
 
   // Scheduling
   scheduledFor DateTime?
+  // Per-recipient local-time scheduling (HH:MM, 24h). When set, the campaign is fanned out
+  // per-timezone group so each recipient receives the email at sendAtLocal in their own
+  // Contact.timezone (null timezone = UTC). Mutually exclusive with absolute scheduledFor:
+  // exactly one of {scheduledFor, sendAtLocal} may be non-null. Validated at the schema /
+  // service layer.
+  sendAtLocal  String?
 
   // Stats (computed)
   totalRecipients Int @default(0)

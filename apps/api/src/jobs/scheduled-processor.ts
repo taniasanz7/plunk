@@ -16,9 +16,12 @@ export function createScheduledCampaignWorker() {
   const worker = new Worker<ScheduledCampaignJobData>(
     scheduledQueue.name,
     async (job: Job<ScheduledCampaignJobData>) => {
-      const {campaignId} = job.data;
+      const {campaignId, timezoneFilter} = job.data;
 
-      signale.info(`[SCHEDULED-PROCESSOR] Processing scheduled campaign ${campaignId}`);
+      signale.info(
+        `[SCHEDULED-PROCESSOR] Processing scheduled campaign ${campaignId}` +
+          (timezoneFilter !== undefined ? ` (tz=${timezoneFilter})` : ''),
+      );
 
       // Get campaign with project
       const campaign = await prisma.campaign.findUnique({
@@ -47,16 +50,22 @@ export function createScheduledCampaignWorker() {
         return;
       }
 
-      // Verify campaign is still in SCHEDULED status
-      if (campaign.status !== CampaignStatus.SCHEDULED) {
+      // Verify campaign is still SCHEDULED or already SENDING (the latter happens for
+      // sendAtLocal fan-out: the first timezone group transitioned the row to SENDING,
+      // and subsequent groups still need to dispatch their slice).
+      if (
+        campaign.status !== CampaignStatus.SCHEDULED &&
+        !(timezoneFilter !== undefined && campaign.status === CampaignStatus.SENDING)
+      ) {
         signale.warn(
           `[SCHEDULED-PROCESSOR] Campaign ${campaignId} is not in SCHEDULED status (${campaign.status}), skipping`,
         );
         return;
       }
 
-      // Start sending the campaign
-      await CampaignService.startSending(campaign.projectId, campaignId);
+      // Start sending the campaign (Patch #11: pass timezoneFilter through so per-tz
+      // fan-out dispatches only this group).
+      await CampaignService.startSending(campaign.projectId, campaignId, undefined, timezoneFilter);
 
       signale.info(`[SCHEDULED-PROCESSOR] Started sending campaign ${campaignId}`);
     },

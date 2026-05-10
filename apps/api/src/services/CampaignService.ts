@@ -1,7 +1,8 @@
 import type {Campaign, Contact, Prisma} from '@plunk/db';
 import {CampaignAudienceType, CampaignStatus, EmailSourceType, EmailStatus, TemplateType} from '@plunk/db';
+import {nextLocalTime} from '@plunk/shared';
 import type {CreateCampaignData, FilterCondition, PaginatedResponse, UpdateCampaignData} from '@plunk/types';
-import {fromPrismaJson, toPrismaJson} from '@plunk/types';
+import {fromPrismaJson, NULL_TIMEZONE_SENTINEL, toPrismaJson} from '@plunk/types';
 import signale from 'signale';
 
 import {prisma} from '../database/prisma.js';
@@ -300,14 +301,36 @@ export class CampaignService {
   }
 
   /**
-   * Send campaign immediately or schedule for later
+   * Send campaign immediately or schedule for later.
+   *
+   * @param scheduledFor  Absolute UTC instant. Mutually exclusive with sendAtLocal.
+   * @param sendAtLocal   Patch #11: HH:MM string. When set, the campaign is fanned out
+   *                      per-timezone group; each group is queued at the next UTC instant
+   *                      that corresponds to HH:MM in its Contact.timezone (null tz =>
+   *                      UTC). Rule: today if HH:MM hasn't yet passed in that timezone,
+   *                      otherwise tomorrow.
    */
-  public static async send(projectId: string, campaignId: string, scheduledFor?: Date): Promise<Campaign> {
+  public static async send(
+    projectId: string,
+    campaignId: string,
+    scheduledFor?: Date,
+    sendAtLocal?: string,
+  ): Promise<Campaign> {
     const campaign = await this.get(projectId, campaignId);
 
     // Validate status
     if (campaign.status !== CampaignStatus.DRAFT && campaign.status !== CampaignStatus.SCHEDULED) {
       throw new HttpException(400, 'Campaign has already been sent or is currently sending');
+    }
+
+    // Patch #11: scheduledFor and sendAtLocal are mutually exclusive at the service layer
+    // too (the controller and zod schema both enforce this; this is defense-in-depth so
+    // service-layer callers can't bypass it).
+    if (scheduledFor && sendAtLocal) {
+      throw new HttpException(
+        400,
+        'Provide exactly one of `scheduledFor` (absolute UTC) or `sendAtLocal` (HH:MM, per-recipient local-time fan-out)',
+      );
     }
 
     // Get recipient count to validate there are contacts to send to
@@ -329,10 +352,15 @@ export class CampaignService {
         if (projectedUsage > limitCheck.limit) {
           throw new HttpException(
             403,
-            `Cannot ${scheduledFor ? 'schedule' : 'send'} campaign: would exceed billing limit. Current usage: ${limitCheck.usage}/${limitCheck.limit} emails, campaign recipients: ${recipientCount}. Upgrade your plan or reduce campaign recipients.`,
+            `Cannot ${scheduledFor || sendAtLocal ? 'schedule' : 'send'} campaign: would exceed billing limit. Current usage: ${limitCheck.usage}/${limitCheck.limit} emails, campaign recipients: ${recipientCount}. Upgrade your plan or reduce campaign recipients.`,
           );
         }
       }
+    }
+
+    if (sendAtLocal) {
+      // Patch #11: per-recipient local-time fan-out.
+      return this.scheduleSendAtLocal(projectId, campaignId, sendAtLocal, recipientCount);
     }
 
     if (scheduledFor) {
@@ -347,6 +375,7 @@ export class CampaignService {
         data: {
           status: CampaignStatus.SCHEDULED,
           scheduledFor,
+          sendAtLocal: null, // Clear in case it was set previously.
           totalRecipients: recipientCount,
         },
         include: {
@@ -378,10 +407,101 @@ export class CampaignService {
   }
 
   /**
-   * Start sending campaign (called immediately or when scheduled time arrives)
-   * Now uses cursor-based pagination for better performance with large recipient lists
+   * Patch #11: schedule a campaign for per-recipient local-time delivery.
+   *
+   * The flow:
+   *   1. SQL `groupBy` over the recipient `WHERE` clause to get distinct `Contact.timezone`
+   *      values + counts. This avoids loading any contact rows into memory regardless of
+   *      audience size (key for our 250K+ contact target).
+   *   2. For each timezone group, compute the next UTC instant matching `sendAtLocal` in
+   *      that timezone (dayjs-aware DST math; null timezone => UTC).
+   *   3. Queue one `scheduled-campaign-<id>-tz-<tz>` BullMQ job per group, each with the
+   *      appropriate `delay`. When fired, the worker invokes `startSending` constrained
+   *      by `timezoneFilter`, which threads through to `processBatch` and ultimately
+   *      `getRecipientsCursor` so each group's recipients are dispatched independently.
+   *
+   * Rule for "next occurrence" (per-timezone): today if HH:MM hasn't yet passed in that
+   * timezone, otherwise tomorrow.
    */
-  public static async startSending(projectId: string, campaignId: string, recipientCount?: number): Promise<void> {
+  private static async scheduleSendAtLocal(
+    projectId: string,
+    campaignId: string,
+    sendAtLocal: string,
+    totalRecipientCount: number,
+  ): Promise<Campaign> {
+    const campaign = await this.get(projectId, campaignId);
+
+    // Group recipients by timezone via SQL (no full-row load — only distinct tz values).
+    // Cast through Prisma's `groupBy` so we never enumerate contact rows.
+    const where = await this.buildRecipientWhereAsync(projectId, campaign);
+    const tzGroups = await prisma.contact.groupBy({
+      by: ['timezone'],
+      where,
+      _count: {_all: true},
+    });
+
+    if (tzGroups.length === 0) {
+      // Defensive: getRecipientCount already guarded for zero, but keep this branch.
+      throw new HttpException(400, 'Campaign has no recipients');
+    }
+
+    const now = new Date();
+
+    // Update the campaign row. We persist sendAtLocal so the row is self-describing for
+    // dashboards/audit, and clear scheduledFor since the two are mutually exclusive.
+    const updatedCampaign = await prisma.campaign.update({
+      where: {id: campaignId},
+      data: {
+        status: CampaignStatus.SCHEDULED,
+        scheduledFor: null,
+        sendAtLocal,
+        totalRecipients: totalRecipientCount,
+      },
+      include: {project: {select: {name: true}}},
+    });
+
+    // Queue one scheduled-campaign job per distinct timezone group. Each one fires at its
+    // own UTC instant. The worker (see worker.ts) decodes the `timezoneFilter` and calls
+    // `startSending` with the same filter, threading it through cursor-based batch
+    // dispatch.
+    for (const group of tzGroups) {
+      const tz = group.timezone; // string | null
+      const fireAt = nextLocalTime(sendAtLocal, tz, now);
+      const filter = tz ?? NULL_TIMEZONE_SENTINEL;
+      await QueueService.scheduleCampaign(campaignId, fireAt, filter);
+      signale.info(
+        `[CAMPAIGN] sendAtLocal fan-out: campaign=${campaignId} tz=${tz ?? 'null(UTC)'} count=${group._count._all} fireAt=${fireAt.toISOString()}`,
+      );
+    }
+
+    await NtfyService.notifyCampaignScheduled(
+      updatedCampaign.name,
+      updatedCampaign.project.name,
+      projectId,
+      // Use the earliest fire time as the "scheduled for" notification stamp.
+      tzGroups
+        .map(g => nextLocalTime(sendAtLocal, g.timezone, now))
+        .reduce((a, b) => (a < b ? a : b)),
+      totalRecipientCount,
+    );
+
+    return updatedCampaign;
+  }
+
+  /**
+   * Start sending campaign (called immediately or when scheduled time arrives)
+   * Now uses cursor-based pagination for better performance with large recipient lists.
+   *
+   * @param timezoneFilter Patch #11: when set, only recipients with this Contact.timezone
+   *                       are dispatched (sentinel `__null__` => null tz). Used by
+   *                       sendAtLocal fan-out so each timezone group sends independently.
+   */
+  public static async startSending(
+    projectId: string,
+    campaignId: string,
+    recipientCount?: number,
+    timezoneFilter?: string,
+  ): Promise<void> {
     const campaign = await this.get(projectId, campaignId);
 
     // Validate status
@@ -393,19 +513,35 @@ export class CampaignService {
       throw new HttpException(400, 'Campaign cannot be sent in its current status');
     }
 
-    // Get recipient count if not provided
+    // Get recipient count if not provided. For per-tz starts we count only this tz group.
     if (recipientCount === undefined) {
-      recipientCount = await this.getRecipientCount(projectId, campaign);
+      recipientCount = timezoneFilter !== undefined
+        ? await this.getRecipientCountForTimezone(projectId, campaign, timezoneFilter)
+        : await this.getRecipientCount(projectId, campaign);
     }
 
-    // Update campaign to SENDING status
+    // For sendAtLocal fan-out we transition to SENDING on the first timezone group's
+    // start. Subsequent groups will see status=SENDING and that's fine — processBatch's
+    // status check accepts SENDING. We do NOT overwrite totalRecipients with this group's
+    // count because totalRecipients was already set to the project-wide total at schedule
+    // time; the last batch of each group still relies on `prisma.email.count({campaignId})`
+    // for finalization, which naturally aggregates across all groups.
+    const updateData: Prisma.CampaignUpdateInput = {
+      status: CampaignStatus.SENDING,
+    };
+    if (timezoneFilter === undefined) {
+      // Legacy path: totalRecipients comes from this single dispatch.
+      updateData.totalRecipients = recipientCount;
+      updateData.sentAt = new Date();
+    } else if (campaign.status !== CampaignStatus.SENDING) {
+      // First timezone group to land — record sentAt so dashboards have a "first dispatch"
+      // timestamp.
+      updateData.sentAt = new Date();
+    }
+
     const updatedCampaign = await prisma.campaign.update({
       where: {id: campaignId},
-      data: {
-        status: CampaignStatus.SENDING,
-        totalRecipients: recipientCount,
-        sentAt: new Date(),
-      },
+      data: updateData,
       include: {
         project: {
           select: {name: true},
@@ -427,6 +563,7 @@ export class CampaignService {
       batchNumber: 1,
       offset: 0,
       limit: BATCH_SIZE,
+      ...(timezoneFilter !== undefined ? {timezoneFilter} : {}),
     });
   }
 
@@ -440,6 +577,8 @@ export class CampaignService {
     offset: number,
     limit: number,
     cursor?: string,
+    // Patch #11: optional per-timezone filter, threaded through from the queue job.
+    timezoneFilter?: string,
   ): Promise<void> {
     const campaign = await prisma.campaign.findUnique({
       where: {id: campaignId},
@@ -458,7 +597,13 @@ export class CampaignService {
     }
 
     // Get batch of recipients using cursor-based pagination
-    const {contacts, nextCursor, hasMore} = await this.getRecipientsCursor(campaign.projectId, campaign, limit, cursor);
+    const {contacts, nextCursor, hasMore} = await this.getRecipientsCursor(
+      campaign.projectId,
+      campaign,
+      limit,
+      cursor,
+      timezoneFilter,
+    );
 
     // Queue emails for each contact
     for (const contact of contacts) {
@@ -514,6 +659,7 @@ export class CampaignService {
         offset: 0, // Not used with cursor pagination
         limit,
         cursor: nextCursor,
+        ...(timezoneFilter !== undefined ? {timezoneFilter} : {}),
       });
     } else {
       // Last batch: reconcile totalRecipients to the actual number of emails created.
@@ -735,6 +881,24 @@ export class CampaignService {
   }
 
   /**
+   * Patch #11: recipient count for a single timezone group within a campaign.
+   * Used by per-timezone fan-out to size the SENDING-status update.
+   */
+  private static async getRecipientCountForTimezone(
+    projectId: string,
+    campaign: Campaign,
+    timezoneFilter: string,
+  ): Promise<number> {
+    const where = await this.buildRecipientWhereAsync(projectId, campaign);
+    return prisma.contact.count({
+      where: {
+        ...where,
+        timezone: timezoneFilter === NULL_TIMEZONE_SENTINEL ? null : timezoneFilter,
+      },
+    });
+  }
+
+  /**
    * Get recipients for a campaign (legacy offset-based, kept for compatibility)
    */
   private static async getRecipients(
@@ -754,15 +918,27 @@ export class CampaignService {
   }
 
   /**
-   * Get recipients for a campaign using cursor-based pagination
+   * Get recipients for a campaign using cursor-based pagination.
+   *
+   * @param timezoneFilter Patch #11: when set, restrict recipients to those whose
+   *                       Contact.timezone matches this value (sentinel `__null__` =>
+   *                       null tz). Combined with the campaign's audience WHERE clause.
    */
   private static async getRecipientsCursor(
     projectId: string,
     campaign: Campaign,
     limit: number,
     cursor?: string,
+    timezoneFilter?: string,
   ): Promise<{contacts: Contact[]; nextCursor?: string; hasMore: boolean}> {
-    const where = await this.buildRecipientWhereAsync(projectId, campaign);
+    const baseWhere = await this.buildRecipientWhereAsync(projectId, campaign);
+    const where: Prisma.ContactWhereInput =
+      timezoneFilter === undefined
+        ? baseWhere
+        : {
+            ...baseWhere,
+            timezone: timezoneFilter === NULL_TIMEZONE_SENTINEL ? null : timezoneFilter,
+          };
 
     // Fetch one extra to determine if there are more results
     const contacts = await prisma.contact.findMany({

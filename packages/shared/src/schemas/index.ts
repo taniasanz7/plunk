@@ -2,6 +2,8 @@ import {CampaignAudienceType, TemplateType, TrackingMode, WorkflowStepType, Work
 import type {FilterCondition, FilterGroup} from '@plunk/types';
 import {z} from 'zod';
 
+import {isValidTimezone} from '../timezone.js';
+
 const literalSchema = z.union([z.string(), z.number(), z.boolean(), z.null(), z.date()]);
 type Literal = z.infer<typeof literalSchema>;
 type Json = Literal | {[key: string]: Json} | Json[];
@@ -9,6 +11,22 @@ const jsonSchema: z.ZodType<Json> = z.lazy(() => z.union([literalSchema, z.array
 
 const uuid = z.string().uuid();
 const email = z.string().email();
+
+// IANA timezone name (e.g. "Europe/Madrid"). Validated via Intl + slash heuristic.
+// Accepts null and empty string explicitly so callers can use it to clear the field.
+const ianaTimezone = z
+  .string()
+  .min(1)
+  .max(64)
+  .refine(value => isValidTimezone(value), {
+    message: 'Invalid IANA timezone (e.g. "Europe/Madrid", "America/New_York")',
+  });
+
+// HH:MM 24-hour time string (e.g. "07:00", "23:30"). Used by Campaign.sendAtLocal and the
+// workflow DELAY localTime variant.
+const hhmm = z.string().regex(/^([0-1]?[0-9]|2[0-3]):([0-5][0-9])$/, {
+  message: 'Time must be in HH:MM 24-hour format (e.g. "07:00")',
+});
 
 export const UtilitySchemas = {
   id: z.object({
@@ -95,6 +113,16 @@ export const ContactSchemas = {
     email,
     subscribed: z.boolean().default(true),
     data: jsonSchema.optional(),
+    // Optional IANA timezone (e.g. "Europe/Madrid"). null clears the field; null/missing
+    // is treated as UTC by downstream consumers (Campaign sendAtLocal, workflow localTime
+    // delays).
+    timezone: ianaTimezone.nullish(),
+  }),
+  update: z.object({
+    email: email.optional(),
+    subscribed: z.boolean().optional(),
+    data: jsonSchema.optional(),
+    timezone: ianaTimezone.nullish(),
   }),
   bulkAction: z.discriminatedUnion('mode', [
     z.object({
@@ -269,27 +297,51 @@ export const WorkflowStepConfigSchemas = {
       )
       .optional(),
   }),
-  delay: z
-    .object({
-      amount: z.number().positive(),
-      unit: z.enum(['minutes', 'hours', 'days']),
-    })
-    .refine(
-      data => {
-        // Max 365 days
-        const maxMinutes = 365 * 24 * 60;
-        const maxHours = 365 * 24;
-        const maxDays = 365;
+  // DELAY step config. Two shapes:
+  //
+  //   1. Absolute (existing, default):
+  //      { amount: N, unit: "minutes" | "hours" | "days" }
+  //
+  //   2. Local-time (patch #11):
+  //      { type: "localTime", hour: 0-23, minute: 0-59, allowedDaysOfWeek?: number[] }
+  //      WorkflowExecutionService computes the next instant matching HH:MM in the
+  //      contact's Contact.timezone (null timezone => UTC). If allowedDaysOfWeek is
+  //      provided, the next instant is constrained to those days of the week
+  //      (ISO 8601 numbering: 1 = Monday, 7 = Sunday). Maps Dittofeed's
+  //      `LocalTime{hour, minute, allowedDaysOfWeek}` delay variant directly.
+  //
+  // The shapes are distinguished by presence of `type: "localTime"`. The absolute
+  // shape never has a `type` field, so existing configs continue to validate.
+  delay: z.union([
+    z
+      .object({
+        amount: z.number().positive(),
+        unit: z.enum(['minutes', 'hours', 'days']),
+      })
+      .refine(
+        data => {
+          // Max 365 days
+          const maxMinutes = 365 * 24 * 60;
+          const maxHours = 365 * 24;
+          const maxDays = 365;
 
-        if (data.unit === 'minutes') return data.amount <= maxMinutes;
-        if (data.unit === 'hours') return data.amount <= maxHours;
-        if (data.unit === 'days') return data.amount <= maxDays;
-        return true;
-      },
-      {
-        message: 'Delay cannot exceed 365 days',
-      },
-    ),
+          if (data.unit === 'minutes') return data.amount <= maxMinutes;
+          if (data.unit === 'hours') return data.amount <= maxHours;
+          if (data.unit === 'days') return data.amount <= maxDays;
+          return true;
+        },
+        {
+          message: 'Delay cannot exceed 365 days',
+        },
+      ),
+    z.object({
+      type: z.literal('localTime'),
+      hour: z.number().int().min(0).max(23),
+      minute: z.number().int().min(0).max(59),
+      // ISO 8601 weekday numbers: 1 = Monday, ..., 7 = Sunday. Empty / missing = any day.
+      allowedDaysOfWeek: z.array(z.number().int().min(1).max(7)).max(7).optional(),
+    }),
+  ]),
   waitForEvent: z.object({
     eventName: z.string().min(1),
     timeout: z.number().positive().max(31536000, 'Timeout cannot exceed 365 days (31,536,000 seconds)').optional(),
@@ -396,9 +448,26 @@ export const CampaignSchemas = {
     audienceCondition: filterConditionSchema.optional(),
     segmentId: uuid.optional(),
   }),
-  schedule: z.object({
-    scheduledFor: z.string(),
-  }),
+  // Schedule a campaign for delivery. Exactly one of:
+  //   - scheduledFor: ISO timestamp, single absolute UTC moment for everyone.
+  //   - sendAtLocal:  HH:MM (24h) local time. CampaignService groups recipients by
+  //                   Contact.timezone (null treated as UTC) and fans out one queued
+  //                   batch per timezone, each delayed to land at HH:MM in that group's
+  //                   local time. The "next occurrence" rule is: today if HH:MM hasn't
+  //                   yet passed in that timezone, otherwise tomorrow.
+  // Mutually exclusive: providing both raises a validation error.
+  schedule: z
+    .object({
+      scheduledFor: z.string().optional(),
+      sendAtLocal: hhmm.optional(),
+    })
+    .refine(
+      data => Boolean(data.scheduledFor) !== Boolean(data.sendAtLocal),
+      {
+        message:
+          'Provide exactly one of `scheduledFor` (absolute UTC) or `sendAtLocal` (HH:MM, per-recipient local-time fan-out)',
+      },
+    ),
   update: z.object({
     name: z.string().optional(),
     description: z.string().optional(),
@@ -423,6 +492,9 @@ export const ActionSchemas = {
     email,
     subscribed: z.boolean().optional(),
     data: jsonSchema.optional(),
+    // Optional IANA timezone for the contact. Validated at the API boundary so we can
+    // reject bad zones with a clear error before persisting. Null/missing => UTC.
+    timezone: ianaTimezone.nullish(),
   }),
   send: z
     .object({

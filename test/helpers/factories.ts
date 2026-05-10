@@ -46,6 +46,9 @@ export interface ContactFactoryOptions {
   email?: string;
   data?: Record<string, unknown>;
   subscribed?: boolean;
+  // Patch #11: optional IANA timezone (e.g. "Europe/Madrid"). Null is allowed and means
+  // "treat as UTC" downstream. Undefined means "leave unset".
+  timezone?: string | null;
 }
 
 export interface TemplateFactoryOptions {
@@ -165,6 +168,7 @@ export class TestFactories {
         email: options.email || `contact-${uniqueId()}@test.com`,
         data: options.data || {},
         subscribed: options.subscribed ?? true,
+        ...(options.timezone !== undefined ? {timezone: options.timezone} : {}),
       },
     });
   }

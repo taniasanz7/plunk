@@ -9,7 +9,7 @@ import type {
 } from '@plunk/db';
 import {StepExecutionStatus, WorkflowExecutionStatus} from '@plunk/db';
 import {toPrismaJson} from '@plunk/types';
-import {renderTemplate, WorkflowStepConfigSchemas} from '@plunk/shared';
+import {nextLocalTimeOnDayOfWeek, renderTemplate, WorkflowStepConfigSchemas} from '@plunk/shared';
 import dns from 'node:dns/promises';
 import net from 'node:net';
 import signale from 'signale';
@@ -601,26 +601,48 @@ export class WorkflowExecutionService {
     stepExecution: WorkflowStepExecution,
     config: StepConfig,
   ): Promise<StepResult> {
-    const {amount, unit} = WorkflowStepConfigSchemas.delay.parse(config);
+    const parsed = WorkflowStepConfigSchemas.delay.parse(config);
 
-    // Calculate delay in milliseconds
+    // Compute delay in milliseconds. Two shapes:
+    //   - Absolute (legacy): {amount, unit} -> straight ms math.
+    //   - localTime (Patch #11): {type:"localTime", hour, minute, allowedDaysOfWeek?} ->
+    //     compute next instant matching HH:MM in contact's IANA timezone (null timezone
+    //     = UTC) constrained to allowed weekdays, then take the diff to now.
     let delayMs = 0;
+    const now = Date.now();
+    const output: Record<string, unknown> = {};
 
-    switch (unit) {
-      case 'minutes':
-        delayMs = amount * 60 * 1000;
-        break;
-      case 'hours':
-        delayMs = amount * 60 * 60 * 1000;
-        break;
-      case 'days':
-        delayMs = amount * 24 * 60 * 60 * 1000;
-        break;
-      default:
-        throw new Error(`Unknown delay unit: ${unit}`);
+    if ('type' in parsed && parsed.type === 'localTime') {
+      const {hour, minute, allowedDaysOfWeek} = parsed;
+      const hhmm = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+      const tz = _execution.contact.timezone; // string | null; null => UTC
+      const target = nextLocalTimeOnDayOfWeek(hhmm, tz, allowedDaysOfWeek, new Date(now));
+      delayMs = Math.max(0, target.getTime() - now);
+      output.delayType = 'localTime';
+      output.delayHour = hour;
+      output.delayMinute = minute;
+      output.delayAllowedDaysOfWeek = allowedDaysOfWeek ?? null;
+      output.delayTimezone = tz ?? 'UTC';
+      output.resumeAt = target.toISOString();
+    } else if ('amount' in parsed) {
+      const {amount, unit} = parsed;
+      switch (unit) {
+        case 'minutes':
+          delayMs = amount * 60 * 1000;
+          break;
+        case 'hours':
+          delayMs = amount * 60 * 60 * 1000;
+          break;
+        case 'days':
+          delayMs = amount * 24 * 60 * 60 * 1000;
+          break;
+        default:
+          throw new Error(`Unknown delay unit: ${unit}`);
+      }
+      output.delayAmount = amount;
+      output.delayUnit = unit;
+      output.resumeAt = new Date(now + delayMs).toISOString();
     }
-
-    const resumeAt = new Date(Date.now() + delayMs);
 
     // Mark step as completed immediately (BullMQ handles the delay)
     await prisma.workflowStepExecution.update({
@@ -628,11 +650,7 @@ export class WorkflowExecutionService {
       data: {
         status: StepExecutionStatus.COMPLETED,
         completedAt: new Date(),
-        output: {
-          delayAmount: amount,
-          delayUnit: unit,
-          resumeAt: resumeAt.toISOString(),
-        },
+        output: output as Prisma.InputJsonValue,
       },
     });
 
@@ -660,9 +678,8 @@ export class WorkflowExecutionService {
     }
 
     return {
-      delayAmount: amount,
-      delayUnit: unit,
-      resumeAt: resumeAt.toISOString(),
+      ...output,
+      delayMs,
       queued: true,
     };
   }

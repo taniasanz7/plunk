@@ -14,11 +14,16 @@ export function createCampaignWorker() {
   const worker = new Worker<CampaignBatchJobData>(
     campaignQueue.name,
     async (job: Job<CampaignBatchJobData>) => {
-      const {campaignId, batchNumber, offset, limit, cursor} = job.data;
+      const {campaignId, batchNumber, offset, limit, cursor, timezoneFilter} = job.data;
 
-      signale.info(`[CAMPAIGN-PROCESSOR] Processing batch ${batchNumber} for campaign ${campaignId}`);
+      signale.info(
+        `[CAMPAIGN-PROCESSOR] Processing batch ${batchNumber} for campaign ${campaignId}` +
+          (timezoneFilter !== undefined ? ` (tz=${timezoneFilter})` : ''),
+      );
 
-      await CampaignService.processBatch(campaignId, batchNumber, offset, limit, cursor);
+      // Patch #11: thread timezoneFilter through so per-tz fan-out batches dispatch only
+      // their assigned timezone group.
+      await CampaignService.processBatch(campaignId, batchNumber, offset, limit, cursor, timezoneFilter);
 
       signale.info(`[CAMPAIGN-PROCESSOR] Completed batch ${batchNumber} for campaign ${campaignId}`);
     },

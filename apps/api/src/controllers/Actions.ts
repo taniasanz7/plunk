@@ -53,7 +53,7 @@ export class Actions {
     const auth = res.locals.auth;
 
     // Zod validation - errors automatically handled by global error handler
-    const {event, email, subscribed, data} = ActionSchemas.track.parse(req.body);
+    const {event, email, subscribed, data, timezone} = ActionSchemas.track.parse(req.body);
 
     // Prevent manual tracking of reserved system events
     if (EventService.isReservedEvent(event)) {
@@ -79,6 +79,10 @@ export class Actions {
       email,
       data as Record<string, unknown> | undefined,
       subscribed,
+      true,
+      // Patch #11: per-contact IANA timezone. Validated upstream by ActionSchemas.track.
+      // null clears the field; undefined leaves it unchanged.
+      timezone ?? undefined,
     );
 
     // Track the event with ALL data (persistent + non-persistent)
