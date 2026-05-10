@@ -9,7 +9,7 @@ import type {
 } from '@plunk/db';
 import {StepExecutionStatus, WorkflowExecutionStatus} from '@plunk/db';
 import {toPrismaJson} from '@plunk/types';
-import {renderTemplate, WorkflowStepConfigSchemas} from '@plunk/shared';
+import {renderSubject, renderTemplate, WorkflowStepConfigSchemas} from '@plunk/shared';
 import dns from 'node:dns/promises';
 import net from 'node:net';
 import signale from 'signale';
@@ -561,8 +561,12 @@ export class WorkflowExecutionService {
       manageUrl: `${DASHBOARD_URI}/manage/${contact.id}`,
     };
 
-    const renderedSubject = this.renderTemplate(step.template.subject, variables);
-    const renderedBody = this.renderTemplate(step.template.body, variables);
+    // Subject is HTML-escaped (plain-text MIME header), body is raw (HTML email).
+    // See template.ts in @plunk/shared for escape-policy rationale.
+    const [renderedSubject, renderedBody] = await Promise.all([
+      renderSubject(step.template.subject, variables),
+      this.renderTemplate(step.template.body, variables),
+    ]);
 
     // Determine recipient email
     // Schema validation ensures customEmail exists when type is CUSTOM
@@ -1169,9 +1173,10 @@ export class WorkflowExecutionService {
 
   /**
    * Helper: Render template with variables
-   * Uses shared template rendering from @plunk/shared
+   * Uses shared LiquidJS-backed template rendering from @plunk/shared (patch #7).
+   * Async since LiquidJS render is Promise-returning.
    */
-  private static renderTemplate(template: string, variables: Record<string, unknown>): string {
+  private static async renderTemplate(template: string, variables: Record<string, unknown>): Promise<string> {
     return renderTemplate(template, variables);
   }
 

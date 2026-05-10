@@ -6,7 +6,7 @@ import signale from 'signale';
 import {DASHBOARD_URI, LANDING_URI, STRIPE_ENABLED} from '../app/constants.js';
 import {prisma} from '../database/prisma.js';
 import {HttpException} from '../exceptions/index.js';
-import {createTranslatorSync, renderTemplate} from '@plunk/shared';
+import {createTranslatorSync, renderSubject, renderTemplate} from '@plunk/shared';
 
 import {BillingLimitService} from './BillingLimitService.js';
 import {DomainService} from './DomainService.js';
@@ -341,7 +341,7 @@ export class EmailService {
         email.contact.data && typeof email.contact.data === 'object' && !Array.isArray(email.contact.data)
           ? email.contact.data
           : {};
-      const formattedEmail = this.format({
+      const formattedEmail = await this.format({
         subject: email.subject,
         body: email.body,
         data: {
@@ -626,16 +626,29 @@ export class EmailService {
   }
 
   /**
-   * Format email template by replacing variables in subject and body
-   * Uses shared template rendering from @plunk/shared
+   * Format email template by replacing variables in subject and body.
+   * Uses shared LiquidJS-backed template rendering from @plunk/shared.
+   *
+   * Subject and body have DIFFERENT escape policies:
+   *  - Subject: HTML-escaped output (`renderSubject`) — subjects are plain-text MIME headers
+   *    and a raw `<` from a user-controlled merge field shouldn't leak into a context where
+   *    downstream tooling might HTML-decode it.
+   *  - Body: raw output (`renderTemplate`) — bodies are HTML and templates legitimately
+   *    interpolate `<a>`/`<img>` snippets via merge fields.
+   *
+   * Async: LiquidJS's render path is Promise-returning (patch #7).
    */
-  public static format({subject, body, data}: {subject: string; body: string; data: Record<string, unknown>}): {
+  public static async format({subject, body, data}: {subject: string; body: string; data: Record<string, unknown>}): Promise<{
     subject: string;
     body: string;
-  } {
+  }> {
+    const [renderedSubject, renderedBody] = await Promise.all([
+      renderSubject(subject, data),
+      renderTemplate(body, data),
+    ]);
     return {
-      subject: renderTemplate(subject, data),
-      body: renderTemplate(body, data),
+      subject: renderedSubject,
+      body: renderedBody,
     };
   }
 

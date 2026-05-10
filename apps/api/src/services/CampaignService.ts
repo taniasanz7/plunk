@@ -476,17 +476,21 @@ export class CampaignService {
           manageUrl: `${DASHBOARD_URI}/manage/${contact.id}`,
         };
 
-        const renderedSubject = EmailService.format({
-          subject: campaign.subject,
-          body: '',
-          data: variables,
-        }).subject;
+        const renderedSubject = (
+          await EmailService.format({
+            subject: campaign.subject,
+            body: '',
+            data: variables,
+          })
+        ).subject;
 
-        const renderedBody = EmailService.format({
-          subject: '',
-          body: campaign.body,
-          data: variables,
-        }).body;
+        const renderedBody = (
+          await EmailService.format({
+            subject: '',
+            body: campaign.body,
+            data: variables,
+          })
+        ).body;
 
         await EmailService.sendCampaignEmail({
           projectId: campaign.projectId,

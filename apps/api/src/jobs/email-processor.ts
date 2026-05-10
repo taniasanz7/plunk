@@ -101,7 +101,7 @@ export async function createEmailWorker() {
 
         // Format template variables in subject and body
         const contactData = (email.contact.data as Record<string, unknown>) || {};
-        const formattedEmail = EmailService.format({
+        const formattedEmail = await EmailService.format({
           subject: email.subject,
           body: email.body,
           data: {

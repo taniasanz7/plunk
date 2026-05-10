@@ -14,7 +14,7 @@ import {HtmlEditor} from './HtmlEditor';
 import {useContactFields, useContacts} from '../../lib/hooks/useContacts';
 import {useConfig} from '../../lib/hooks/useConfig';
 import {useEffect, useRef, useState} from 'react';
-import {renderTemplate} from '@plunk/shared';
+import {renderSubjectSync, renderTemplateSync} from '@plunk/shared';
 import {
   Button,
   Dialog,
@@ -234,7 +234,25 @@ export function EmailEditor({value, onChange, placeholder, subject, from, replyT
   };
 
   const replaceVariables = (text: string, contactData: Record<string, unknown>) => {
-    return renderTemplate(text, contactData);
+    // EmailEditor preview is a synchronous React render path; use the sync variant.
+    // LiquidJS supports sync rendering for all the standard tags/filters we use.
+    try {
+      return renderTemplateSync(text, contactData);
+    } catch (err) {
+      // Don't crash the preview on a malformed Liquid template — show the raw text.
+      console.warn('Template preview render failed:', err);
+      return text;
+    }
+  };
+
+  const replaceSubjectVariables = (text: string, contactData: Record<string, unknown>) => {
+    // Subject preview uses the HTML-escaping engine to mirror server send behavior.
+    try {
+      return renderSubjectSync(text, contactData);
+    } catch (err) {
+      console.warn('Template subject preview render failed:', err);
+      return text;
+    }
   };
 
   const getPreviewHtml = () => {
@@ -273,7 +291,7 @@ export function EmailEditor({value, onChange, placeholder, subject, from, replyT
       ...((contact.data as Record<string, unknown> | null) || {}),
     };
 
-    return replaceVariables(subject, contactData);
+    return replaceSubjectVariables(subject, contactData);
   };
 
   const getPreviewContainerWidth = () => {
