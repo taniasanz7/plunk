@@ -110,6 +110,12 @@ export default function CampaignDetailsPage() {
   const [scheduledDateTime, setScheduledDateTime] = useState('');
   const [selectedPreset, setSelectedPreset] = useState<string | null>(null);
   const [testEmailAddress, setTestEmailAddress] = useState('');
+  // Patch #11 UI: 'utc' = absolute UTC moment (existing scheduledFor),
+  // 'local' = per-recipient local-time fan-out (sendAtLocal HH:MM, optionally with
+  // sendAtLocalDate YYYY-MM-DD for a specific calendar day per recipient timezone).
+  const [scheduleMode, setScheduleMode] = useState<'utc' | 'local'>('utc');
+  const [sendAtLocalTime, setSendAtLocalTime] = useState('09:00');
+  const [sendAtLocalDate, setSendAtLocalDate] = useState('');
 
   type CampaignDialog =
     | {type: 'none'}
@@ -155,6 +161,37 @@ export default function CampaignDetailsPage() {
   };
 
   const handleSchedule = async () => {
+    if (scheduleMode === 'local') {
+      if (!/^([0-1]?[0-9]|2[0-3]):([0-5][0-9])$/.test(sendAtLocalTime)) {
+        toast.error('Local time must be in HH:MM 24-hour format');
+        return;
+      }
+      if (sendAtLocalDate && !/^\d{4}-\d{2}-\d{2}$/.test(sendAtLocalDate)) {
+        toast.error('Local date must be in YYYY-MM-DD format');
+        return;
+      }
+
+      try {
+        await network.fetch<void, typeof CampaignSchemas.schedule>('POST', `/campaigns/${id}/send`, {
+          sendAtLocal: sendAtLocalTime,
+          ...(sendAtLocalDate ? {sendAtLocalDate} : {}),
+        });
+        toast.success(
+          sendAtLocalDate
+            ? `Campaign scheduled for ${sendAtLocalDate} at ${sendAtLocalTime} in each contact's local timezone (contacts without a timezone default to UTC).`
+            : `Campaign scheduled to send at ${sendAtLocalTime} in each contact's local timezone, next occurrence (contacts without a timezone default to UTC).`,
+        );
+        setDialog({type: 'none'});
+        setScheduledDateTime('');
+        setSelectedPreset(null);
+        setSendAtLocalDate('');
+        void mutate();
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : 'Failed to schedule campaign');
+      }
+      return;
+    }
+
     if (!scheduledDateTime) {
       toast.error('Please select a date and time');
       return;
@@ -766,11 +803,85 @@ export default function CampaignDetailsPage() {
               <DialogHeader>
                 <DialogTitle>Schedule for later</DialogTitle>
                 <DialogDescription>
-                  Pick a time and Plunk will send it for you. Times shown in {getUserTimezone()}.
+                  {scheduleMode === 'utc'
+                    ? `Pick a time and Plunk will send it for you. Times shown in ${getUserTimezone()}.`
+                    : `Plunk sends to each contact at this hour and minute in their own timezone (Contact.timezone). Contacts without a timezone fall back to UTC.`}
                 </DialogDescription>
               </DialogHeader>
 
               <div className="space-y-5 py-2">
+                {/* Patch #11: mode toggle — fixed UTC moment vs per-recipient local time */}
+                <div className="space-y-2">
+                  <Label>Send mode</Label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setScheduleMode('utc')}
+                      className={`min-h-[44px] px-3 py-2 rounded-lg border text-sm text-left transition-colors ${
+                        scheduleMode === 'utc'
+                          ? 'border-neutral-900 bg-neutral-50 text-neutral-900 font-medium'
+                          : 'border-neutral-200 text-neutral-700 hover:border-neutral-400 hover:text-neutral-900'
+                      }`}
+                    >
+                      <div>Exact time</div>
+                      <div className="text-xs text-neutral-500 mt-0.5 font-normal">All recipients at once</div>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setScheduleMode('local')}
+                      className={`min-h-[44px] px-3 py-2 rounded-lg border text-sm text-left transition-colors ${
+                        scheduleMode === 'local'
+                          ? 'border-neutral-900 bg-neutral-50 text-neutral-900 font-medium'
+                          : 'border-neutral-200 text-neutral-700 hover:border-neutral-400 hover:text-neutral-900'
+                      }`}
+                    >
+                      <div>Local time</div>
+                      <div className="text-xs text-neutral-500 mt-0.5 font-normal">Per-recipient timezone</div>
+                    </button>
+                  </div>
+                </div>
+
+                {scheduleMode === 'local' && (
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <Label htmlFor="sendAtLocalDate">Date (optional)</Label>
+                        <Input
+                          id="sendAtLocalDate"
+                          type="date"
+                          value={sendAtLocalDate}
+                          onChange={e => setSendAtLocalDate(e.target.value)}
+                          min={new Date().toISOString().slice(0, 10)}
+                        />
+                      </div>
+                      <div>
+                        <Label htmlFor="sendAtLocalTime">Time (HH:MM, 24h)</Label>
+                        <Input
+                          id="sendAtLocalTime"
+                          type="time"
+                          value={sendAtLocalTime}
+                          onChange={e => setSendAtLocalTime(e.target.value)}
+                        />
+                      </div>
+                    </div>
+                    <div className="rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs text-neutral-600 space-y-1">
+                      {sendAtLocalDate ? (
+                        <p>
+                          Send on <strong>{sendAtLocalDate}</strong> at <strong>{sendAtLocalTime}</strong> in each contact&apos;s local timezone.
+                          Recipients whose Tuesday-06:00-local is already past at scheduling time are skipped.
+                        </p>
+                      ) : (
+                        <p>
+                          Leave the date empty to send at the <strong>next occurrence</strong> of {sendAtLocalTime} in each contact&apos;s local timezone (today if it hasn&apos;t passed yet there, otherwise tomorrow).
+                        </p>
+                      )}
+                      <p>Contacts without a timezone fall back to UTC.</p>
+                    </div>
+                  </div>
+                )}
+
+                {scheduleMode === 'utc' && (
+                <>
                 {/* Quick presets */}
                 <div className="space-y-2">
                   <Label>Quick options</Label>
@@ -855,6 +966,8 @@ export default function CampaignDetailsPage() {
                     )}
                   </div>
                 )}
+                </>
+                )}
               </div>
 
               <p className="text-xs text-neutral-500 leading-relaxed">
@@ -873,7 +986,11 @@ export default function CampaignDetailsPage() {
                 >
                   Not yet
                 </Button>
-                <Button type="button" onClick={handleSchedule} disabled={!scheduledDateTime}>
+                <Button
+                  type="button"
+                  onClick={handleSchedule}
+                  disabled={scheduleMode === 'utc' ? !scheduledDateTime : !sendAtLocalTime}
+                >
                   <Calendar className="h-4 w-4" />
                   Schedule send
                 </Button>

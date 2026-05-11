@@ -200,6 +200,7 @@ export class Campaigns {
     const {id} = UtilitySchemas.id.parse(req.params);
     const scheduledFor = req.body?.scheduledFor;
     const sendAtLocal = req.body?.sendAtLocal;
+    const sendAtLocalDate = req.body?.sendAtLocalDate;
 
     // Patch #11: scheduledFor and sendAtLocal are mutually exclusive.
     if (scheduledFor && sendAtLocal) {
@@ -207,6 +208,11 @@ export class Campaigns {
         400,
         'Provide exactly one of `scheduledFor` (absolute UTC) or `sendAtLocal` (HH:MM, per-recipient local-time fan-out)',
       );
+    }
+
+    // sendAtLocalDate only makes sense alongside sendAtLocal.
+    if (sendAtLocalDate && !sendAtLocal) {
+      throw new HttpException(400, 'sendAtLocalDate is only valid alongside sendAtLocal');
     }
 
     // Parse scheduledFor if provided
@@ -226,7 +232,20 @@ export class Campaigns {
       }
     }
 
-    const campaign = await CampaignService.send(auth.projectId, id!, scheduledDate, sendAtLocal ?? undefined);
+    // Validate sendAtLocalDate YYYY-MM-DD format at the boundary; service will re-parse.
+    if (sendAtLocalDate !== undefined && sendAtLocalDate !== null) {
+      if (typeof sendAtLocalDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(sendAtLocalDate)) {
+        throw new HttpException(400, 'sendAtLocalDate must be in YYYY-MM-DD format (e.g. "2026-05-12")');
+      }
+    }
+
+    const campaign = await CampaignService.send(
+      auth.projectId,
+      id!,
+      scheduledDate,
+      sendAtLocal ?? undefined,
+      sendAtLocalDate ?? undefined,
+    );
 
     return res.json({
       success: true,
@@ -234,7 +253,9 @@ export class Campaigns {
       message: scheduledDate
         ? `Campaign scheduled for ${scheduledDate.toISOString()}`
         : sendAtLocal
-          ? `Campaign scheduled for ${sendAtLocal} in each recipient's local timezone`
+          ? sendAtLocalDate
+            ? `Campaign scheduled for ${sendAtLocalDate} ${sendAtLocal} in each recipient's local timezone`
+            : `Campaign scheduled for ${sendAtLocal} in each recipient's local timezone`
           : 'Campaign is being sent',
     });
   }

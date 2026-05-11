@@ -315,6 +315,11 @@ model Campaign {
   // exactly one of {scheduledFor, sendAtLocal} may be non-null. Validated at the schema /
   // service layer.
   sendAtLocal  String?
+  // Optional YYYY-MM-DD calendar date paired with sendAtLocal. When set, the campaign
+  // targets a specific local wall-clock instant per timezone group (e.g. "Tuesday
+  // May 12 at 06:00 local"). When null, sendAtLocal defaults to "next occurrence of
+  // HH:MM in each contact's tz". Only meaningful when sendAtLocal is also set.
+  sendAtLocalDate String?
 
   // Stats (computed)
   totalRecipients Int @default(0)

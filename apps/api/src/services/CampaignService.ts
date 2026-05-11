@@ -1,6 +1,6 @@
 import type {Campaign, Contact, Prisma} from '@plunk/db';
 import {CampaignAudienceType, CampaignStatus, EmailSourceType, EmailStatus, TemplateType} from '@plunk/db';
-import {nextLocalTime} from '@plunk/shared';
+import {localDateTimeToUtc, nextLocalTime} from '@plunk/shared';
 import type {CreateCampaignData, FilterCondition, PaginatedResponse, UpdateCampaignData} from '@plunk/types';
 import {fromPrismaJson, NULL_TIMEZONE_SENTINEL, toPrismaJson} from '@plunk/types';
 import signale from 'signale';
@@ -303,18 +303,24 @@ export class CampaignService {
   /**
    * Send campaign immediately or schedule for later.
    *
-   * @param scheduledFor  Absolute UTC instant. Mutually exclusive with sendAtLocal.
-   * @param sendAtLocal   Patch #11: HH:MM string. When set, the campaign is fanned out
-   *                      per-timezone group; each group is queued at the next UTC instant
-   *                      that corresponds to HH:MM in its Contact.timezone (null tz =>
-   *                      UTC). Rule: today if HH:MM hasn't yet passed in that timezone,
-   *                      otherwise tomorrow.
+   * @param scheduledFor      Absolute UTC instant. Mutually exclusive with sendAtLocal.
+   * @param sendAtLocal       Patch #11: HH:MM string. When set, the campaign is fanned out
+   *                          per-timezone group; each group is queued at the next UTC instant
+   *                          that corresponds to HH:MM in its Contact.timezone (null tz =>
+   *                          UTC). Rule: today if HH:MM hasn't yet passed in that timezone,
+   *                          otherwise tomorrow.
+   * @param sendAtLocalDate   Patch #11 (date extension): optional YYYY-MM-DD local calendar
+   *                          date paired with sendAtLocal. When provided the fan-out targets
+   *                          that specific local wall-clock instant in each timezone (e.g.
+   *                          "Tuesday May 12 at 06:00 local"), bypassing the "next
+   *                          occurrence" rule. Only valid alongside sendAtLocal.
    */
   public static async send(
     projectId: string,
     campaignId: string,
     scheduledFor?: Date,
     sendAtLocal?: string,
+    sendAtLocalDate?: string,
   ): Promise<Campaign> {
     const campaign = await this.get(projectId, campaignId);
 
@@ -331,6 +337,10 @@ export class CampaignService {
         400,
         'Provide exactly one of `scheduledFor` (absolute UTC) or `sendAtLocal` (HH:MM, per-recipient local-time fan-out)',
       );
+    }
+
+    if (sendAtLocalDate && !sendAtLocal) {
+      throw new HttpException(400, 'sendAtLocalDate is only valid alongside sendAtLocal');
     }
 
     // Get recipient count to validate there are contacts to send to
@@ -360,7 +370,7 @@ export class CampaignService {
 
     if (sendAtLocal) {
       // Patch #11: per-recipient local-time fan-out.
-      return this.scheduleSendAtLocal(projectId, campaignId, sendAtLocal, recipientCount);
+      return this.scheduleSendAtLocal(projectId, campaignId, sendAtLocal, recipientCount, sendAtLocalDate);
     }
 
     if (scheduledFor) {
@@ -428,6 +438,7 @@ export class CampaignService {
     campaignId: string,
     sendAtLocal: string,
     totalRecipientCount: number,
+    sendAtLocalDate?: string,
   ): Promise<Campaign> {
     const campaign = await this.get(projectId, campaignId);
 
@@ -449,41 +460,75 @@ export class CampaignService {
 
     // Update the campaign row. We persist sendAtLocal so the row is self-describing for
     // dashboards/audit, and clear scheduledFor since the two are mutually exclusive.
+    // When a specific local date is set we'll reject the operation if every tz group
+    // resolves to a past instant — otherwise we'd silently schedule a campaign that fires
+    // immediately for everyone. (For "next occurrence" mode this can't happen.)
+    if (sendAtLocalDate) {
+      const allPast = tzGroups.every(g => localDateTimeToUtc(sendAtLocalDate, sendAtLocal, g.timezone).getTime() <= now.getTime());
+      if (allPast) {
+        throw new HttpException(400, `${sendAtLocalDate} ${sendAtLocal} is already in the past for every recipient timezone`);
+      }
+    }
+
     const updatedCampaign = await prisma.campaign.update({
       where: {id: campaignId},
       data: {
         status: CampaignStatus.SCHEDULED,
         scheduledFor: null,
         sendAtLocal,
+        sendAtLocalDate: sendAtLocalDate ?? null,
         totalRecipients: totalRecipientCount,
       },
       include: {project: {select: {name: true}}},
     });
 
+    // Helper: pick the right UTC instant for a tz group given the mode.
+    // - With sendAtLocalDate: anchor to that specific calendar day in the contact's tz.
+    //   Past instants are skipped (the group won't be queued at all), which matches the
+    //   intuition that "Tuesday May 12 at 06:00 local" should NOT send to Sydney recipients
+    //   if Sydney has already passed Tuesday 06:00. The startup-time validation above
+    //   ensures at least one group still resolves in the future.
+    // - Without sendAtLocalDate: "next occurrence", same as the original patch 11 behavior.
+    const computeFireAt = (tz: string | null): Date | null => {
+      if (sendAtLocalDate) {
+        const candidate = localDateTimeToUtc(sendAtLocalDate, sendAtLocal, tz);
+        return candidate.getTime() > now.getTime() ? candidate : null;
+      }
+      return nextLocalTime(sendAtLocal, tz, now);
+    };
+
     // Queue one scheduled-campaign job per distinct timezone group. Each one fires at its
     // own UTC instant. The worker (see worker.ts) decodes the `timezoneFilter` and calls
     // `startSending` with the same filter, threading it through cursor-based batch
     // dispatch.
+    const scheduledFireTimes: Date[] = [];
     for (const group of tzGroups) {
       const tz = group.timezone; // string | null
-      const fireAt = nextLocalTime(sendAtLocal, tz, now);
+      const fireAt = computeFireAt(tz);
+      if (!fireAt) {
+        signale.info(
+          `[CAMPAIGN] sendAtLocal fan-out: campaign=${campaignId} tz=${tz ?? 'null(UTC)'} count=${group._count._all} skipped (date ${sendAtLocalDate} ${sendAtLocal} already past in this tz)`,
+        );
+        continue;
+      }
       const filter = tz ?? NULL_TIMEZONE_SENTINEL;
       await QueueService.scheduleCampaign(campaignId, fireAt, filter);
+      scheduledFireTimes.push(fireAt);
       signale.info(
         `[CAMPAIGN] sendAtLocal fan-out: campaign=${campaignId} tz=${tz ?? 'null(UTC)'} count=${group._count._all} fireAt=${fireAt.toISOString()}`,
       );
     }
 
-    await NtfyService.notifyCampaignScheduled(
-      updatedCampaign.name,
-      updatedCampaign.project.name,
-      projectId,
-      // Use the earliest fire time as the "scheduled for" notification stamp.
-      tzGroups
-        .map(g => nextLocalTime(sendAtLocal, g.timezone, now))
-        .reduce((a, b) => (a < b ? a : b)),
-      totalRecipientCount,
-    );
+    if (scheduledFireTimes.length > 0) {
+      await NtfyService.notifyCampaignScheduled(
+        updatedCampaign.name,
+        updatedCampaign.project.name,
+        projectId,
+        // Use the earliest fire time as the "scheduled for" notification stamp.
+        scheduledFireTimes.reduce((a, b) => (a < b ? a : b)),
+        totalRecipientCount,
+      );
+    }
 
     return updatedCampaign;
   }

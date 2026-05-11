@@ -460,12 +460,26 @@ export const CampaignSchemas = {
     .object({
       scheduledFor: z.string().optional(),
       sendAtLocal: hhmm.optional(),
+      // Optional YYYY-MM-DD local calendar date paired with sendAtLocal. When both are
+      // set the campaign sends at <date>T<HH:MM> in each contact's local timezone (so
+      // "Tuesday 06:00 local" yields different UTC instants per tz group). When
+      // sendAtLocal is set alone, behavior remains "next occurrence of HH:MM in tz".
+      sendAtLocalDate: z
+        .string()
+        .regex(/^\d{4}-\d{2}-\d{2}$/, 'sendAtLocalDate must be YYYY-MM-DD')
+        .optional(),
     })
     .refine(
       data => Boolean(data.scheduledFor) !== Boolean(data.sendAtLocal),
       {
         message:
           'Provide exactly one of `scheduledFor` (absolute UTC) or `sendAtLocal` (HH:MM, per-recipient local-time fan-out)',
+      },
+    )
+    .refine(
+      data => !data.sendAtLocalDate || Boolean(data.sendAtLocal),
+      {
+        message: 'sendAtLocalDate is only valid alongside sendAtLocal',
       },
     ),
   update: z.object({

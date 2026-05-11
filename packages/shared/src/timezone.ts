@@ -191,6 +191,36 @@ export function msUntilNextLocalTime(hhmm: string, tz: string | null | undefined
 }
 
 /**
+ * Compute the absolute UTC Date for a specific local calendar date+time in `tz`.
+ *
+ * Unlike {@link nextLocalTime}, this does NOT auto-advance to the next day when the
+ * resolved moment is in the past — callers should validate the result against `now`
+ * themselves. Used by campaign `sendAtLocal` when a specific `sendAtLocalDate` is set
+ * (e.g. "Tuesday May 12 at 06:00 in each contact's local timezone").
+ *
+ * Same DST behavior as `nextLocalTime`:
+ *   - Spring-forward: HH:MM inside the skipped hour returns the next valid wall-clock.
+ *   - Fall-back: HH:MM inside the repeated hour returns the first (pre-shift) instant.
+ *
+ * @param yyyymmdd  "YYYY-MM-DD" local calendar date in `tz`
+ * @param hhmm      "HH:MM" 24-hour local time in `tz`
+ * @param tz        IANA timezone name (or null/undefined => UTC)
+ */
+export function localDateTimeToUtc(
+  yyyymmdd: string,
+  hhmm: string,
+  tz: string | null | undefined,
+): Date {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(yyyymmdd)) {
+    throw new Error(`localDateTimeToUtc: date must be YYYY-MM-DD, got "${yyyymmdd}"`);
+  }
+  const {hour, minute} = parseHHMM(hhmm);
+  const zone = resolveTimezone(tz);
+  const local = dayjs.tz(`${yyyymmdd}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00`, zone);
+  return new Date(local.utc().valueOf());
+}
+
+/**
  * Compute milliseconds to delay from `now` until the next allowed-DOW + HH:MM in `tz`.
  * Returns a non-negative integer.
  */
