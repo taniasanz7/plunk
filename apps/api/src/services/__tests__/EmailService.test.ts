@@ -1100,4 +1100,150 @@ describe('SES MIME Boundary Structure', () => {
     expect(rawMessage).toContain(`--${relatedBoundary}--`);
     expect(rawMessage).toContain(`--${mixedBoundary}--`);
   });
+
+  // ========================================
+  // RESEND
+  // ========================================
+  describe('Resend', () => {
+    it('should create a new transactional email from an existing one', async () => {
+      const original = await EmailService.sendTransactionalEmail({
+        projectId,
+        contactId,
+        subject: 'Original',
+        body: 'Original body',
+        from: 'test@example.com',
+        fromName: 'Test',
+        replyTo: 'reply@example.com',
+      });
+
+      const resent = await EmailService.resend(projectId, original.id);
+
+      expect(resent.id).not.toBe(original.id);
+      expect(resent.contactId).toBe(original.contactId);
+      expect(resent.subject).toBe('Original');
+      expect(resent.body).toBe('Original body');
+      expect(resent.from).toBe('test@example.com');
+      expect(resent.fromName).toBe('Test');
+      expect(resent.replyTo).toBe('reply@example.com');
+      expect(resent.sourceType).toBe(EmailSourceType.TRANSACTIONAL);
+      expect(resent.status).toBe(EmailStatus.PENDING);
+    });
+
+    it('should refuse to resend a marketing template to an unsubscribed contact', async () => {
+      const unsubscribedContact = await factories.createContact({
+        projectId,
+        subscribed: false,
+      });
+
+      const marketingTemplate = await factories.createTemplate({
+        projectId,
+        type: 'MARKETING',
+      });
+
+      // Seed an existing email row (e.g. originally sent while subscribed, then contact unsubscribed)
+      const original = await factories.createEmail({
+        projectId,
+        contactId: unsubscribedContact.id,
+        templateId: marketingTemplate.id,
+        sourceType: EmailSourceType.TRANSACTIONAL,
+        subject: 'Newsletter',
+        body: 'Buy now',
+      });
+
+      await expect(EmailService.resend(projectId, original.id)).rejects.toThrow(/unsubscribed/i);
+    });
+
+    it('should refuse to resend a campaign email (no template) to an unsubscribed contact', async () => {
+      const unsubscribedContact = await factories.createContact({
+        projectId,
+        subscribed: false,
+      });
+
+      // Seed a CAMPAIGN-typed email with no template (inline body) for a contact
+      // who has since unsubscribed.
+      const campaign = await factories.createCampaign({projectId});
+      const original = await factories.createEmail({
+        projectId,
+        contactId: unsubscribedContact.id,
+        sourceType: EmailSourceType.CAMPAIGN,
+        campaignId: campaign.id,
+        subject: 'Newsletter',
+        body: 'Newsletter body',
+      });
+
+      await expect(EmailService.resend(projectId, original.id)).rejects.toThrow(/unsubscribed/i);
+    });
+
+    it('should allow resending a transactional template to an unsubscribed contact', async () => {
+      const unsubscribedContact = await factories.createContact({
+        projectId,
+        subscribed: false,
+      });
+
+      const transactionalTemplate = await factories.createTemplate({
+        projectId,
+        type: 'TRANSACTIONAL',
+      });
+
+      const original = await EmailService.sendTransactionalEmail({
+        projectId,
+        contactId: unsubscribedContact.id,
+        templateId: transactionalTemplate.id,
+        subject: 'Password reset',
+        body: 'Reset code: 12345',
+        from: 'noreply@example.com',
+      });
+
+      const resent = await EmailService.resend(projectId, original.id);
+
+      expect(resent.id).not.toBe(original.id);
+      expect(resent.status).toBe(EmailStatus.PENDING);
+      expect(resent.templateId).toBe(transactionalTemplate.id);
+    });
+
+    it('should reject resending an email from another project', async () => {
+      const original = await EmailService.sendTransactionalEmail({
+        projectId,
+        contactId,
+        subject: 'Test',
+        body: 'Test',
+        from: 'test@example.com',
+      });
+
+      const {project: otherProject} = await factories.createUserWithProject();
+
+      await expect(EmailService.resend(otherProject.id, original.id)).rejects.toThrow(/not found/i);
+    });
+
+    it('should throw 404 when the email does not exist', async () => {
+      await expect(
+        EmailService.resend(projectId, '00000000-0000-0000-0000-000000000000'),
+      ).rejects.toThrow(/not found/i);
+    });
+
+    it('should strip the internal X-Plunk-Recipient-Override header when resending', async () => {
+      const original = await factories.createEmail({
+        projectId,
+        contactId,
+        subject: 'Test',
+        body: 'Test',
+        sourceType: EmailSourceType.WORKFLOW,
+      });
+
+      // Backfill the header to simulate a workflow email with a custom recipient
+      await prisma.email.update({
+        where: {id: original.id},
+        data: {headers: {'X-Plunk-Recipient-Override': 'override@example.com', 'X-Custom': 'keep'}},
+      });
+
+      const resent = await EmailService.resend(projectId, original.id);
+
+      const resentHeaders =
+        resent.headers && typeof resent.headers === 'object' && !Array.isArray(resent.headers)
+          ? (resent.headers as Record<string, string>)
+          : {};
+      expect(resentHeaders['X-Plunk-Recipient-Override']).toBeUndefined();
+      expect(resentHeaders['X-Custom']).toBe('keep');
+    });
+  });
 });

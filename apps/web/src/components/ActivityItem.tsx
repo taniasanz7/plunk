@@ -2,6 +2,8 @@ import {Badge, Button, Collapsible, CollapsibleContent, CollapsibleTrigger} from
 import type {Activity} from '@plunk/types';
 import {memo, useState} from 'react';
 import {EmailPreviewModal} from './EmailPreviewModal';
+import {network} from '../lib/network';
+import {toast} from 'sonner';
 import {
   AlertCircle,
   Calendar,
@@ -11,6 +13,7 @@ import {
   Eye,
   Inbox,
   MousePointerClick,
+  RotateCw,
   Send,
   ShieldAlert,
   Workflow,
@@ -344,11 +347,33 @@ function getActivityConfig(activity: Activity): ActivityConfig {
 
 export const ActivityItem = memo(function ActivityItem({activity, status = 'completed'}: ActivityItemProps) {
   const [showPreviewModal, setShowPreviewModal] = useState(false);
+  const [isResending, setIsResending] = useState(false);
   const config = getActivityConfig(activity);
   const Icon = config.icon;
   const timestamp = new Date(activity.timestamp);
   const isUpcoming = status === 'upcoming';
   const relativeTime = isUpcoming ? getUpcomingTime(timestamp) : getRelativeTime(timestamp);
+  const emailId =
+    typeof activity.metadata.emailId === 'string' ? activity.metadata.emailId : undefined;
+  const canResend = !isUpcoming && isEmailActivity(activity.type) && !!emailId;
+
+  const handleResend = async () => {
+    if (!emailId || isResending) return;
+
+    setIsResending(true);
+    try {
+      const result = await network.fetch<{id: string}>('POST', `/emails/${emailId}/resend`);
+      // No dedicated email-detail route in the dashboard; the resent email will
+      // surface in this same activity feed once it's sent. Show the new id so
+      // support can correlate via the API if needed.
+      const newId = typeof result?.id === 'string' ? result.id : undefined;
+      toast.success(newId ? `Email resent (new id: ${newId.slice(0, 8)}...)` : 'Email resent');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to resend email');
+    } finally {
+      setIsResending(false);
+    }
+  };
 
   return (
     <div className={`flex items-start gap-4 ${isUpcoming ? 'opacity-80' : ''}`}>
@@ -377,6 +402,19 @@ export const ActivityItem = memo(function ActivityItem({activity, status = 'comp
                 >
                   <Eye className="h-3 w-3 mr-1" />
                   Preview
+                </Button>
+              ) : null}
+              {canResend ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleResend}
+                  disabled={isResending}
+                  className="h-6 px-2 text-xs"
+                  title="Resend this email to the contact"
+                >
+                  <RotateCw className={`h-3 w-3 mr-1 ${isResending ? 'animate-spin' : ''}`} />
+                  {isResending ? 'Resending...' : 'Resend'}
                 </Button>
               ) : null}
             </div>
@@ -431,6 +469,7 @@ export const ActivityItem = memo(function ActivityItem({activity, status = 'comp
           replyTo={activity.metadata.replyTo ? String(activity.metadata.replyTo) : undefined}
           toName={activity.metadata.toName ? String(activity.metadata.toName) : undefined}
           toEmail={activity.contactEmail}
+          emailId={!isUpcoming ? emailId : undefined}
         />
       ) : null}
     </div>

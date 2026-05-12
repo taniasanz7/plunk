@@ -114,6 +114,85 @@ export class EmailService {
   }
 
   /**
+   * Resend a previously sent email
+   *
+   * Loads the original email row scoped by project, then re-enqueues a fresh
+   * TRANSACTIONAL email with the same recipient, subject, body, from/replyTo,
+   * headers, attachments, and templateId. The new email gets its own id and
+   * its own opens/clicks lifecycle — no resentFromId column is stored.
+   *
+   * Subscription policy mirrors sendTransactionalEmail: if the original used a
+   * MARKETING template and the contact is now unsubscribed, the resend is
+   * refused with a 400. Transactional emails resend regardless.
+   *
+   * Note: attachments are re-sent verbatim from the stored email row (we keep
+   * base64 content in Email.attachments). If they were stripped or expired in
+   * storage, the resend will fail at SES send-time the same way the original
+   * would have.
+   */
+  public static async resend(projectId: string, emailId: string): Promise<Email> {
+    const original = await prisma.email.findFirst({
+      where: {id: emailId, projectId},
+      include: {
+        template: {select: {type: true}},
+        contact: {select: {subscribed: true, email: true}},
+      },
+    });
+
+    if (!original) {
+      throw new HttpException(404, 'Email not found');
+    }
+
+    // Mirror the existing send-path policy: only true TRANSACTIONAL emails are exempt from
+    // the subscription check. Anything else (CAMPAIGN, WORKFLOW, MARKETING template) must
+    // be blocked when the contact is now unsubscribed — even if the original was sent while
+    // they were still subscribed.
+    const isOriginalTransactional =
+      original.sourceType === EmailSourceType.TRANSACTIONAL || original.template?.type === 'TRANSACTIONAL';
+
+    if (!isOriginalTransactional && !original.contact.subscribed) {
+      throw new HttpException(
+        400,
+        `Cannot resend marketing email to unsubscribed contact ${original.contact.email}. Only transactional emails may be resent to unsubscribed contacts.`,
+      );
+    }
+
+    // Parse stored headers / attachments back into the shapes sendTransactionalEmail expects
+    const headers =
+      original.headers && typeof original.headers === 'object' && !Array.isArray(original.headers)
+        ? (original.headers as Record<string, string>)
+        : undefined;
+
+    // Strip internal recipient-override header — we always resend to the contact's current address
+    const cleanHeaders = headers ? {...headers} : undefined;
+    if (cleanHeaders && 'X-Plunk-Recipient-Override' in cleanHeaders) {
+      delete cleanHeaders['X-Plunk-Recipient-Override'];
+    }
+
+    const attachments =
+      original.attachments && Array.isArray(original.attachments)
+        ? (original.attachments as unknown as Attachment[])
+        : undefined;
+
+    // Re-send as TRANSACTIONAL. sendTransactionalEmail handles the marketing-template
+    // subscription guard, billing limit, and queueing — we deliberately go through it
+    // instead of copy-pasting that policy here.
+    return this.sendTransactionalEmail({
+      projectId,
+      contactId: original.contactId,
+      subject: original.subject,
+      body: original.body,
+      from: original.from,
+      fromName: original.fromName ?? undefined,
+      toName: original.toName ?? undefined,
+      replyTo: original.replyTo ?? undefined,
+      headers: cleanHeaders && Object.keys(cleanHeaders).length > 0 ? cleanHeaders : undefined,
+      attachments,
+      templateId: original.templateId ?? undefined,
+    });
+  }
+
+  /**
    * Send a campaign email
    */
   public static async sendCampaignEmail(params: SendEmailParams): Promise<Email> {

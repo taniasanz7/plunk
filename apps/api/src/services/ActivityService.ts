@@ -494,6 +494,7 @@ export class ActivityService {
     // Convert each email into multiple activities based on its state
     for (const email of emails) {
       const baseMetadata = {
+        emailId: email.id,
         subject: email.subject,
         body: email.body,
         from: email.from,

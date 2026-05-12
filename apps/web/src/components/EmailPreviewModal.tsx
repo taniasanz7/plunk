@@ -1,7 +1,9 @@
 import {Button, Dialog, DialogContent, DialogHeader, DialogTitle} from '@plunk/ui';
-import {Monitor, Smartphone, Tablet} from 'lucide-react';
+import {Monitor, RotateCw, Smartphone, Tablet} from 'lucide-react';
 import {useState} from 'react';
+import {toast} from 'sonner';
 import {wrapEmailWithStyles} from '../lib/emailStyles';
+import {network} from '../lib/network';
 
 interface EmailPreviewModalProps {
   open: boolean;
@@ -13,6 +15,11 @@ interface EmailPreviewModalProps {
   replyTo?: string;
   toName?: string;
   toEmail?: string;
+  /**
+   * If provided, the modal renders a "Resend" button that calls
+   * POST /emails/:id/resend. Omit to render a preview-only modal.
+   */
+  emailId?: string;
 }
 
 type PreviewDevice = 'mobile' | 'tablet' | 'desktop';
@@ -27,8 +34,25 @@ export function EmailPreviewModal({
   replyTo,
   toName,
   toEmail,
+  emailId,
 }: EmailPreviewModalProps) {
   const [previewDevice, setPreviewDevice] = useState<PreviewDevice>('desktop');
+  const [isResending, setIsResending] = useState(false);
+
+  const handleResend = async () => {
+    if (!emailId || isResending) return;
+
+    setIsResending(true);
+    try {
+      const result = await network.fetch<{id: string}>('POST', `/emails/${emailId}/resend`);
+      const newId = typeof result?.id === 'string' ? result.id : undefined;
+      toast.success(newId ? `Email resent (new id: ${newId.slice(0, 8)}...)` : 'Email resent');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to resend email');
+    } finally {
+      setIsResending(false);
+    }
+  };
 
   const getPreviewContainerWidth = () => {
     switch (previewDevice) {
@@ -61,7 +85,22 @@ export function EmailPreviewModal({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-6xl h-[90vh] flex flex-col p-0">
         <DialogHeader className="px-6 pt-6 pb-4 flex-shrink-0">
-          <DialogTitle className="pr-8">Email Preview</DialogTitle>
+          <div className="flex items-center justify-between gap-4 pr-8">
+            <DialogTitle>Email Preview</DialogTitle>
+            {emailId ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleResend}
+                disabled={isResending}
+                title="Resend this email to the recipient"
+              >
+                <RotateCw className={`h-3.5 w-3.5 ${isResending ? 'animate-spin' : ''}`} />
+                {isResending ? 'Resending...' : 'Resend'}
+              </Button>
+            ) : null}
+          </div>
         </DialogHeader>
 
         {/* Device Selector */}

@@ -29,6 +29,7 @@ import {Auth} from './controllers/Auth.js';
 import {Campaigns} from './controllers/Campaigns.js';
 import {Contacts} from './controllers/Contacts.js';
 import {Domains} from './controllers/Domains.js';
+import {Emails} from './controllers/Emails.js';
 import {Events} from './controllers/Events.js';
 import {Oauth} from './controllers/Oauth/index.js';
 import {Projects} from './controllers/Projects.js';
@@ -156,6 +157,7 @@ const server = new (class extends Server {
       new Users(),
       new Contacts(),
       new Domains(),
+      new Emails(),
       new Projects(),
       new Segments(),
       new Templates(),
