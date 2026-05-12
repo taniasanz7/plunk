@@ -1,0 +1,2 @@
+-- AlterEnum
+ALTER TYPE "WorkflowStepType" ADD VALUE 'ENROLL_IN_WORKFLOW';

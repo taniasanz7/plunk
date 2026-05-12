@@ -200,6 +200,13 @@ export default function WorkflowEditorPage() {
           }
           break;
 
+        case 'ENROLL_IN_WORKFLOW':
+        case 'REMOVE_FROM_WORKFLOW':
+          if (!config.workflowId) {
+            errors.push(`"${step.name}" step is missing target workflow`);
+          }
+          break;
+
         case 'WEBHOOK':
           if (!config.url) {
             errors.push(`"${step.name}" step is missing webhook URL`);

@@ -385,6 +385,8 @@ model WorkflowStep {
   // WAIT_FOR_EVENT: { eventName: "email.clicked", timeout: 86400 }
   // CONDITION: { field: "contact.data.plan", operator: "equals", value: "pro" }
   // EXIT: { reason: "unsubscribed" }
+  // ENROLL_IN_WORKFLOW: { workflowId: "uuid", eventData: { ... } }
+  // REMOVE_FROM_WORKFLOW: { workflowId: "uuid" }
 
   // Relations
   workflow   Workflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
@@ -726,6 +728,8 @@ enum WorkflowStepType {
   EXIT // Early exit point
   WEBHOOK // Call external webhook
   UPDATE_CONTACT // Update contact fields
+  ENROLL_IN_WORKFLOW // Enroll the current contact in another workflow
+  REMOVE_FROM_WORKFLOW // Cancel active executions for the current contact in another workflow
 }
 
 enum WorkflowExecutionStatus {

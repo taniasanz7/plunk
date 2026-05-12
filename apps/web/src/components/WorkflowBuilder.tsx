@@ -28,9 +28,11 @@ import {
   Minimize2,
   Plus,
   Settings,
+  Share2,
   Timer,
   Trash2,
   UserCog,
+  UserMinus,
   Webhook,
 } from 'lucide-react';
 import {useCallback, useEffect, useMemo, useState} from 'react';
@@ -44,6 +46,7 @@ interface WorkflowBuilderProps {
   workflowId: string;
   steps: (WorkflowStep & {
     template?: {id: string; name: string} | null;
+    targetWorkflow?: {id: string; name: string} | null;
     outgoingTransitions: Array<{
       id: string;
       toStepId: string;
@@ -69,6 +72,8 @@ const STEP_TYPE_LABELS: Record<string, string> = {
   EXIT: 'Exit',
   WEBHOOK: 'Webhook',
   UPDATE_CONTACT: 'Update Contact',
+  ENROLL_IN_WORKFLOW: 'Enroll in Workflow',
+  REMOVE_FROM_WORKFLOW: 'Remove from Workflow',
 };
 
 const STEP_TYPE_ICONS = {
@@ -80,6 +85,8 @@ const STEP_TYPE_ICONS = {
   EXIT: LogOut,
   WEBHOOK: Webhook,
   UPDATE_CONTACT: UserCog,
+  ENROLL_IN_WORKFLOW: Share2,
+  REMOVE_FROM_WORKFLOW: UserMinus,
 };
 
 const STEP_TYPE_COLORS = {
@@ -91,6 +98,8 @@ const STEP_TYPE_COLORS = {
   EXIT: '#dc2626',
   WEBHOOK: '#16a34a',
   UPDATE_CONTACT: '#4f46e5',
+  ENROLL_IN_WORKFLOW: '#0891b2',
+  REMOVE_FROM_WORKFLOW: '#e11d48',
 };
 
 const STEP_TYPE_BG = {
@@ -102,6 +111,8 @@ const STEP_TYPE_BG = {
   EXIT: '#fee2e2',
   WEBHOOK: '#dcfce7',
   UPDATE_CONTACT: '#e0e7ff',
+  ENROLL_IN_WORKFLOW: '#cffafe',
+  REMOVE_FROM_WORKFLOW: '#ffe4e6',
 };
 
 // Multi-branch condition helpers
@@ -245,6 +256,7 @@ function CustomNode({
     onEdit?: () => void;
     onDelete?: () => void;
     template?: {id: string; name: string};
+    targetWorkflow?: {id: string; name: string} | null;
     config?: any;
   };
 }) {
@@ -418,6 +430,33 @@ function CustomNode({
             </div>
           </div>
         )}
+        {(data.type === 'ENROLL_IN_WORKFLOW' || data.type === 'REMOVE_FROM_WORKFLOW') && data.config?.workflowId && (
+          <div className="mt-3 pt-3 border-t border-neutral-100">
+            <a
+              href={`/workflows/${data.config.workflowId}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={e => e.stopPropagation()}
+              onMouseDown={e => e.stopPropagation()}
+              className="nodrag flex items-center gap-2 text-xs text-neutral-600 hover:text-cyan-700 hover:bg-cyan-50 -mx-2 px-2 py-1 rounded transition-colors group/enroll"
+              title="Open target workflow in a new tab"
+            >
+              {data.type === 'ENROLL_IN_WORKFLOW' ? (
+                <Share2 className="h-3 w-3 shrink-0" />
+              ) : (
+                <UserMinus className="h-3 w-3 shrink-0" />
+              )}
+              {data.targetWorkflow?.name ? (
+                <span className="truncate flex-1">{data.targetWorkflow.name}</span>
+              ) : (
+                <span className="truncate flex-1 font-mono text-[10px] italic text-neutral-400">
+                  {String(data.config.workflowId)}
+                </span>
+              )}
+              <ExternalLink className="h-3 w-3 shrink-0 opacity-0 group-hover/enroll:opacity-100 transition-opacity" />
+            </a>
+          </div>
+        )}
       </div>
 
       <Handle
@@ -442,6 +481,8 @@ const STEP_TYPE_OPTIONS = [
   {value: 'CONDITION', label: 'Condition', icon: GitBranch, color: STEP_TYPE_COLORS.CONDITION},
   {value: 'WEBHOOK', label: 'Webhook', icon: Webhook, color: STEP_TYPE_COLORS.WEBHOOK},
   {value: 'UPDATE_CONTACT', label: 'Update Contact', icon: UserCog, color: STEP_TYPE_COLORS.UPDATE_CONTACT},
+  {value: 'ENROLL_IN_WORKFLOW', label: 'Enroll in Workflow', icon: Share2, color: STEP_TYPE_COLORS.ENROLL_IN_WORKFLOW},
+  {value: 'REMOVE_FROM_WORKFLOW', label: 'Remove from Workflow', icon: UserMinus, color: STEP_TYPE_COLORS.REMOVE_FROM_WORKFLOW},
   {value: 'EXIT', label: 'Exit', icon: LogOut, color: STEP_TYPE_COLORS.EXIT},
 ];
 
@@ -516,6 +557,7 @@ export function WorkflowBuilder({workflowId, steps, onUpdate}: WorkflowBuilderPr
           color,
           bgColor,
           template: step.template,
+          targetWorkflow: step.targetWorkflow,
           config: step.config,
           onEdit: () => handleEditStep(step.id),
           onDelete: () => handleDeleteStepClick(step.id),

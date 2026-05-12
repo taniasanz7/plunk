@@ -130,13 +130,18 @@ export class WorkflowExecutionService {
     let execution = initialExecution;
     if (initialExecution.status === WorkflowExecutionStatus.WAITING) {
       signale.info(`[WORKFLOW] Setting execution ${executionId} from WAITING to RUNNING`);
-      await prisma.workflowExecution.update({
-        where: {id: executionId},
+      const resumedExecution = await prisma.workflowExecution.updateMany({
+        where: {id: executionId, status: WorkflowExecutionStatus.WAITING},
         data: {
           status: WorkflowExecutionStatus.RUNNING,
           currentStepId: stepId,
         },
       });
+
+      if (resumedExecution.count !== 1) {
+        signale.info(`[WORKFLOW] Execution ${executionId} is no longer waiting, skipping resume`);
+        return;
+      }
 
       // Re-fetch the execution with the updated status
       const updatedExecution = await prisma.workflowExecution.findUnique({
@@ -209,6 +214,21 @@ export class WorkflowExecutionService {
     }
 
     try {
+      // Re-check immediately before executing the action. Once this guard passes,
+      // the action is considered in flight; all subsequent parent transitions are
+      // conditionally fenced so cancellation remains authoritative.
+      const activeExecution = await prisma.workflowExecution.findUnique({
+        where: {id: executionId},
+        select: {status: true},
+      });
+      if (activeExecution?.status !== WorkflowExecutionStatus.RUNNING) {
+        await prisma.workflowStepExecution.updateMany({
+          where: {id: stepExecution.id, status: StepExecutionStatus.RUNNING},
+          data: {status: StepExecutionStatus.SKIPPED, completedAt: new Date()},
+        });
+        return;
+      }
+
       // Execute the step based on its type
       signale.info(`[WORKFLOW] Executing step ${stepId} of type ${step.type}`);
       const result = await this.executeStep(step, execution, stepExecution);
@@ -220,8 +240,11 @@ export class WorkflowExecutionService {
         where: {id: stepExecution.id},
       });
 
-      if (updatedStepExecution?.status === StepExecutionStatus.WAITING) {
-        // Don't mark as completed or process next steps - the step will be resumed later
+      if (
+        updatedStepExecution?.status === StepExecutionStatus.WAITING ||
+        updatedStepExecution?.status === StepExecutionStatus.SKIPPED
+      ) {
+        // Don't mark waiting or cancelled steps as completed or process next steps
         return;
       }
 
@@ -263,36 +286,45 @@ export class WorkflowExecutionService {
         },
       });
 
-      // Mark workflow execution as failed
-      const failedExecution = await prisma.workflowExecution.update({
-        where: {id: executionId},
+      // Mark the workflow as failed only if it is still active. A concurrent
+      // cancellation must remain authoritative.
+      const failedExecution = await prisma.workflowExecution.updateMany({
+        where: {
+          id: executionId,
+          status: {in: [WorkflowExecutionStatus.RUNNING, WorkflowExecutionStatus.WAITING]},
+        },
         data: {
           status: WorkflowExecutionStatus.FAILED,
           completedAt: new Date(),
         },
-        include: {
-          workflow: {
-            select: {
-              name: true,
-              project: {
-                select: {name: true, id: true},
-              },
-            },
-          },
-          contact: {
-            select: {email: true},
-          },
-        },
       });
 
-      // Send notification about workflow execution failure
-      await NtfyService.notifyWorkflowExecutionFailed(
-        failedExecution.workflow.name,
-        failedExecution.workflow.project.name,
-        failedExecution.workflow.project.id,
-        failedExecution.contact.email,
-        error instanceof Error ? error.message : 'Unknown error',
-      );
+      if (failedExecution.count === 1) {
+        const executionForNotification = await prisma.workflowExecution.findUniqueOrThrow({
+          where: {id: executionId},
+          include: {
+            workflow: {
+              select: {
+                name: true,
+                project: {
+                  select: {name: true, id: true},
+                },
+              },
+            },
+            contact: {
+              select: {email: true},
+            },
+          },
+        });
+
+        await NtfyService.notifyWorkflowExecutionFailed(
+          executionForNotification.workflow.name,
+          executionForNotification.workflow.project.name,
+          executionForNotification.workflow.project.id,
+          executionForNotification.contact.email,
+          error instanceof Error ? error.message : 'Unknown error',
+        );
+      }
 
       throw error;
     }
@@ -329,8 +361,8 @@ export class WorkflowExecutionService {
     }
 
     // Mark step as completed with timeout
-    await prisma.workflowStepExecution.update({
-      where: {id: stepExecution.id},
+    const completedStep = await prisma.workflowStepExecution.updateMany({
+      where: {id: stepExecution.id, status: StepExecutionStatus.WAITING},
       data: {
         status: StepExecutionStatus.COMPLETED,
         completedAt: new Date(),
@@ -346,6 +378,10 @@ export class WorkflowExecutionService {
       },
     });
 
+    if (completedStep.count !== 1) {
+      return;
+    }
+
     // Continue workflow - find transitions with timeout/fallback logic
     const transitions = stepExecution.step.outgoingTransitions || [];
     const fallbackTransition = transitions.find(
@@ -359,34 +395,38 @@ export class WorkflowExecutionService {
 
     if (fallbackTransition) {
       // Follow timeout branch
-      await prisma.workflowExecution.update({
-        where: {id: stepExecution.executionId},
+      const resumedExecution = await prisma.workflowExecution.updateMany({
+        where: {id: stepExecution.executionId, status: WorkflowExecutionStatus.WAITING},
         data: {
           status: WorkflowExecutionStatus.RUNNING,
           currentStepId: fallbackTransition.toStep.id,
         },
       });
 
-      await this.processStepExecution(stepExecution.executionId, fallbackTransition.toStep.id);
+      if (resumedExecution.count === 1) {
+        await this.processStepExecution(stepExecution.executionId, fallbackTransition.toStep.id);
+      }
     } else if (transitions.length > 0) {
       // No timeout branch, follow first transition
       const firstTransition = transitions[0];
       if (firstTransition?.toStep) {
         const nextStep = firstTransition.toStep;
-        await prisma.workflowExecution.update({
-          where: {id: stepExecution.executionId},
+        const resumedExecution = await prisma.workflowExecution.updateMany({
+          where: {id: stepExecution.executionId, status: WorkflowExecutionStatus.WAITING},
           data: {
             status: WorkflowExecutionStatus.RUNNING,
             currentStepId: nextStep.id,
           },
         });
 
-        await this.processStepExecution(stepExecution.executionId, nextStep.id);
+        if (resumedExecution.count === 1) {
+          await this.processStepExecution(stepExecution.executionId, nextStep.id);
+        }
       }
     } else {
       // No transitions, complete workflow
-      await prisma.workflowExecution.update({
-        where: {id: stepExecution.executionId},
+      await prisma.workflowExecution.updateMany({
+        where: {id: stepExecution.executionId, status: WorkflowExecutionStatus.WAITING},
         data: {
           status: WorkflowExecutionStatus.COMPLETED,
           completedAt: new Date(),
@@ -409,6 +449,7 @@ export class WorkflowExecutionService {
       where: {
         status: StepExecutionStatus.WAITING,
         execution: {
+          status: WorkflowExecutionStatus.WAITING,
           workflow: {projectId},
           ...(contactId ? {contactId} : {}),
         },
@@ -439,8 +480,8 @@ export class WorkflowExecutionService {
 
       if (config && typeof config === 'object' && 'eventName' in config && config.eventName === eventName) {
         // Event matches, resume execution
-        await prisma.workflowStepExecution.update({
-          where: {id: stepExecution.id},
+        const completedStep = await prisma.workflowStepExecution.updateMany({
+          where: {id: stepExecution.id, status: StepExecutionStatus.WAITING},
           data: {
             status: StepExecutionStatus.COMPLETED,
             completedAt: new Date(),
@@ -452,8 +493,21 @@ export class WorkflowExecutionService {
           },
         });
 
+        if (completedStep.count !== 1) {
+          continue;
+        }
+
         // Cancel any pending timeout job
         await QueueService.cancelWorkflowTimeout(stepExecution.id);
+
+        const resumedExecution = await prisma.workflowExecution.updateMany({
+          where: {id: stepExecution.executionId, status: WorkflowExecutionStatus.WAITING},
+          data: {status: WorkflowExecutionStatus.RUNNING},
+        });
+
+        if (resumedExecution.count !== 1) {
+          continue;
+        }
 
         // Continue workflow
         await this.processNextSteps(stepExecution.execution, stepExecution.step, {eventReceived: true});
@@ -495,6 +549,12 @@ export class WorkflowExecutionService {
 
       case 'UPDATE_CONTACT':
         return await this.executeUpdateContact(step, execution, stepExecution, config);
+
+      case 'ENROLL_IN_WORKFLOW':
+        return await this.executeEnrollInWorkflow(step, execution, stepExecution, config);
+
+      case 'REMOVE_FROM_WORKFLOW':
+        return await this.executeRemoveFromWorkflow(step, execution, stepExecution, config);
 
       default:
         throw new Error(`Unknown step type: ${step.type}`);
@@ -637,12 +697,28 @@ export class WorkflowExecutionService {
     });
 
     // Update workflow execution to waiting
-    await prisma.workflowExecution.update({
-      where: {id: _execution.id},
+    const waitingExecution = await prisma.workflowExecution.updateMany({
+      where: {id: _execution.id, status: WorkflowExecutionStatus.RUNNING},
       data: {
         status: WorkflowExecutionStatus.WAITING,
       },
     });
+
+    if (waitingExecution.count !== 1) {
+      await prisma.workflowStepExecution.updateMany({
+        where: {id: stepExecution.id, status: StepExecutionStatus.COMPLETED},
+        data: {
+          status: StepExecutionStatus.SKIPPED,
+          completedAt: new Date(),
+        },
+      });
+      return {
+        delayAmount: amount,
+        delayUnit: unit,
+        resumeAt: resumeAt.toISOString(),
+        queued: false,
+      };
+    }
 
     // Find next steps to queue
     const transitions = await prisma.workflowTransition.findMany({
@@ -691,17 +767,55 @@ export class WorkflowExecutionService {
     });
 
     // Update workflow execution to waiting
-    await prisma.workflowExecution.update({
-      where: {id: _execution.id},
+    const waitingExecution = await prisma.workflowExecution.updateMany({
+      where: {id: _execution.id, status: WorkflowExecutionStatus.RUNNING},
       data: {
         status: WorkflowExecutionStatus.WAITING,
       },
     });
 
+    if (waitingExecution.count !== 1) {
+      await prisma.workflowStepExecution.updateMany({
+        where: {id: stepExecution.id, status: StepExecutionStatus.WAITING},
+        data: {
+          status: StepExecutionStatus.SKIPPED,
+          completedAt: new Date(),
+        },
+      });
+      return {
+        eventName,
+        timeout: timeout || null,
+        waitingUntil: timeoutDate?.toISOString() || 'indefinite',
+      };
+    }
+
     // Queue timeout handler if timeout is specified
     if (timeout && timeout > 0) {
       const timeoutMs = timeout * 1000;
       await QueueService.queueWorkflowTimeout(_execution.id, _step.id, stepExecution.id, timeoutMs);
+
+      // Close the enqueue/cancel race: removal may have committed after the
+      // RUNNING -> WAITING transition but before the timeout job existed.
+      const [currentExecution, currentStepExecution] = await Promise.all([
+        prisma.workflowExecution.findUnique({
+          where: {id: _execution.id},
+          select: {status: true},
+        }),
+        prisma.workflowStepExecution.findUnique({
+          where: {id: stepExecution.id},
+          select: {status: true},
+        }),
+      ]);
+      if (
+        currentExecution?.status !== WorkflowExecutionStatus.WAITING ||
+        currentStepExecution?.status !== StepExecutionStatus.WAITING
+      ) {
+        try {
+          await QueueService.cancelWorkflowTimeout(stepExecution.id);
+        } catch (error) {
+          signale.error(`[WORKFLOW] Failed to clean up timeout for cancelled step ${stepExecution.id}:`, error);
+        }
+      }
     }
 
     return {
@@ -808,9 +922,11 @@ export class WorkflowExecutionService {
         ? config.reason
         : 'exit_step';
 
-    // Mark workflow as exited
-    await prisma.workflowExecution.update({
-      where: {id: execution.id},
+    // Mark the execution as exited only while it is still active. The status
+    // guard preserves a concurrent cancellation, and processNextSteps leaves
+    // the terminal EXITED status unchanged.
+    await prisma.workflowExecution.updateMany({
+      where: {id: execution.id, status: WorkflowExecutionStatus.RUNNING},
       data: {
         status: WorkflowExecutionStatus.EXITED,
         exitReason: reason || undefined,
@@ -1085,6 +1201,159 @@ export class WorkflowExecutionService {
   }
 
   /**
+   * ENROLL_IN_WORKFLOW step - Enroll the current contact into another workflow
+   *
+   * Fire-and-forget: the target workflow runs independently. The current
+   * workflow advances to its next step as soon as the target execution has
+   * been created (or skipped due to allowReentry).
+   *
+   * Re-uses EventService.enrollContactInWorkflow so that allowReentry of the
+   * TARGET workflow is honoured identically to event-triggered enrollment.
+   */
+  private static async executeEnrollInWorkflow(
+    _step: WorkflowStep,
+    execution: WorkflowExecutionWithRelations,
+    _stepExecution: WorkflowStepExecution,
+    config: StepConfig,
+  ): Promise<StepResult> {
+    const {workflowId: targetWorkflowId, eventData} = WorkflowStepConfigSchemas.enrollInWorkflow.parse(config);
+
+    // Merge any user-supplied eventData with the current execution's context
+    // so trigger-event variables on the new execution behave like a normal
+    // event-triggered enrollment (eventData wins on collision).
+    const currentContext =
+      execution.context && typeof execution.context === 'object' && !Array.isArray(execution.context)
+        ? (execution.context as Record<string, unknown>)
+        : {};
+    const mergedContext: Record<string, unknown> = {...currentContext, ...(eventData ?? {})};
+
+    // Dynamic import to avoid circular dependency between
+    // EventService <-> WorkflowExecutionService at module load time.
+    const {EventService} = await import('./EventService.js');
+
+    const enrolled = await EventService.enrollContactInWorkflow(
+      execution.workflow.projectId,
+      targetWorkflowId,
+      execution.contact.id,
+      Object.keys(mergedContext).length > 0 ? mergedContext : undefined,
+    );
+
+    return {
+      targetWorkflowId,
+      enrolled,
+      contactId: execution.contact.id,
+    };
+  }
+
+  /**
+   * REMOVE_FROM_WORKFLOW step - Cancel active executions for the current contact in another workflow
+   */
+  private static async executeRemoveFromWorkflow(
+    _step: WorkflowStep,
+    execution: WorkflowExecutionWithRelations,
+    _stepExecution: WorkflowStepExecution,
+    config: StepConfig,
+  ): Promise<StepResult> {
+    const {workflowId: targetWorkflowId} = WorkflowStepConfigSchemas.removeFromWorkflow.parse(config);
+
+    if (targetWorkflowId === execution.workflow.id) {
+      throw new Error('Cannot remove a contact from the current workflow');
+    }
+
+    const targetWorkflow = await prisma.workflow.findFirst({
+      where: {
+        id: targetWorkflowId,
+        projectId: execution.workflow.projectId,
+      },
+      select: {id: true},
+    });
+
+    if (!targetWorkflow) {
+      throw new Error('Target workflow not found in this project');
+    }
+
+    const result = await prisma.$transaction(async tx => {
+      const activeExecutions = await tx.workflowExecution.findMany({
+        where: {
+          workflowId: targetWorkflowId,
+          contactId: execution.contact.id,
+          status: {in: [WorkflowExecutionStatus.RUNNING, WorkflowExecutionStatus.WAITING]},
+        },
+        select: {id: true},
+      });
+      const executionIds = activeExecutions.map(activeExecution => activeExecution.id);
+      const completedAt = new Date();
+      const exitReason = `Removed by workflow ${execution.workflow.id}`;
+
+      const cancelledExecutions = await tx.workflowExecution.updateMany({
+        where: {
+          id: {in: executionIds},
+          status: {in: [WorkflowExecutionStatus.RUNNING, WorkflowExecutionStatus.WAITING]},
+        },
+        data: {
+          status: WorkflowExecutionStatus.CANCELLED,
+          completedAt,
+          exitReason,
+        },
+      });
+
+      // Restrict step cleanup to rows this transaction actually cancelled;
+      // an execution that completed after the initial read must remain intact.
+      const cancelledExecutionRows = await tx.workflowExecution.findMany({
+        where: {
+          id: {in: executionIds},
+          status: WorkflowExecutionStatus.CANCELLED,
+          completedAt,
+          exitReason,
+        },
+        select: {id: true},
+      });
+      const cancelledExecutionIds = cancelledExecutionRows.map(cancelledExecution => cancelledExecution.id);
+      const waitingStepExecutions = await tx.workflowStepExecution.findMany({
+        where: {
+          executionId: {in: cancelledExecutionIds},
+          status: StepExecutionStatus.WAITING,
+        },
+        select: {id: true},
+      });
+      const waitingStepExecutionIds = waitingStepExecutions.map(waitingStepExecution => waitingStepExecution.id);
+
+      await tx.workflowStepExecution.updateMany({
+        where: {
+          id: {in: waitingStepExecutionIds},
+          status: StepExecutionStatus.WAITING,
+        },
+        data: {
+          status: StepExecutionStatus.SKIPPED,
+          completedAt,
+        },
+      });
+
+      return {
+        count: cancelledExecutions.count,
+        waitingStepExecutionIds,
+      };
+    });
+
+    const timeoutCleanupResults = await Promise.allSettled(
+      result.waitingStepExecutionIds.map(stepExecutionId => QueueService.cancelWorkflowTimeout(stepExecutionId)),
+    );
+    timeoutCleanupResults.forEach((cleanupResult, index) => {
+      if (cleanupResult.status === 'rejected') {
+        signale.error(
+          `[WORKFLOW] Failed to cancel timeout for removed step ${result.waitingStepExecutionIds[index]}`,
+          cleanupResult.reason,
+        );
+      }
+    });
+
+    return {
+      targetWorkflowId,
+      removed: result.count,
+    };
+  }
+
+  /**
    * Process next steps based on transitions
    */
   private static async processNextSteps(
@@ -1096,8 +1365,11 @@ export class WorkflowExecutionService {
 
     if (transitions.length === 0) {
       // No more steps, complete the workflow
-      await prisma.workflowExecution.update({
-        where: {id: execution.id},
+      await prisma.workflowExecution.updateMany({
+        where: {
+          id: execution.id,
+          status: {in: [WorkflowExecutionStatus.RUNNING, WorkflowExecutionStatus.WAITING]},
+        },
         data: {
           status: WorkflowExecutionStatus.COMPLETED,
           completedAt: new Date(),
@@ -1142,8 +1414,11 @@ export class WorkflowExecutionService {
 
     if (!nextStep) {
       // No valid transition found, complete workflow
-      await prisma.workflowExecution.update({
-        where: {id: execution.id},
+      await prisma.workflowExecution.updateMany({
+        where: {
+          id: execution.id,
+          status: {in: [WorkflowExecutionStatus.RUNNING, WorkflowExecutionStatus.WAITING]},
+        },
         data: {
           status: WorkflowExecutionStatus.COMPLETED,
           completedAt: new Date(),
@@ -1154,13 +1429,20 @@ export class WorkflowExecutionService {
     }
 
     // Update current step and continue execution
-    await prisma.workflowExecution.update({
-      where: {id: execution.id},
+    const advancedExecution = await prisma.workflowExecution.updateMany({
+      where: {
+        id: execution.id,
+        status: {in: [WorkflowExecutionStatus.RUNNING, WorkflowExecutionStatus.WAITING]},
+      },
       data: {
         currentStepId: nextStep.id,
         status: WorkflowExecutionStatus.RUNNING,
       },
     });
+
+    if (advancedExecution.count !== 1) {
+      return;
+    }
 
     // Process the next step
     // All steps are processed immediately - DELAY and WAIT_FOR_EVENT will pause the workflow internally

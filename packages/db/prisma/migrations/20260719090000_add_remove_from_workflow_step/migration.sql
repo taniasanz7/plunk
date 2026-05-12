@@ -1,0 +1,2 @@
+-- AlterEnum
+ALTER TYPE "WorkflowStepType" ADD VALUE 'REMOVE_FROM_WORKFLOW';

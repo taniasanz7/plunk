@@ -408,6 +408,52 @@ export class EventService {
   }
 
   /**
+   * Enroll a contact into a workflow programmatically (e.g. from an
+   * ENROLL_IN_WORKFLOW workflow step). Validates that the target workflow
+   * belongs to the same project, is enabled, and then reuses the internal
+   * primitive used by event-triggered enrollment so that `allowReentry`
+   * semantics are honoured identically.
+   *
+   * Returns true if a new execution was actually started (caller can use
+   * this for logging/observability; not required for flow control).
+   */
+  public static async enrollContactInWorkflow(
+    projectId: string,
+    targetWorkflowId: string,
+    contactId: string,
+    context?: Record<string, unknown>,
+  ): Promise<boolean> {
+    const workflow = await prisma.workflow.findFirst({
+      where: {id: targetWorkflowId, projectId},
+      select: {id: true, enabled: true},
+    });
+
+    if (!workflow) {
+      throw new Error(`Target workflow ${targetWorkflowId} not found in this project`);
+    }
+
+    if (!workflow.enabled) {
+      throw new Error(`Target workflow ${targetWorkflowId} is disabled`);
+    }
+
+    const executionsBefore = await prisma.workflowExecution.count({
+      where: {workflowId: targetWorkflowId, contactId},
+    });
+
+    // Re-use the existing internal enrollment primitive so that allowReentry
+    // semantics + trigger-step lookup + initial step execution all stay in
+    // one place. The primitive swallows errors internally; we observe the
+    // outcome by checking whether a new execution row was created.
+    await this.startWorkflowForContact(targetWorkflowId, contactId, context);
+
+    const executionsAfter = await prisma.workflowExecution.count({
+      where: {workflowId: targetWorkflowId, contactId},
+    });
+
+    return executionsAfter > executionsBefore;
+  }
+
+  /**
    * Start a workflow execution for a contact
    */
   private static async startWorkflowForContact(
@@ -445,16 +491,17 @@ export class EventService {
           return;
         }
       } else {
-        // If re-entry is allowed, only check if there's a currently RUNNING execution
-        const runningExecution = await prisma.workflowExecution.findFirst({
+        // Re-entry may start after a terminal execution, but never while the
+        // contact still has an active execution (including a waiting one).
+        const activeExecution = await prisma.workflowExecution.findFirst({
           where: {
             workflowId,
             contactId,
-            status: 'RUNNING',
+            status: {in: ['RUNNING', 'WAITING']},
           },
         });
 
-        if (runningExecution) {
+        if (activeExecution) {
           return;
         }
       }

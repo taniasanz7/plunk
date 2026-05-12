@@ -264,6 +264,62 @@ describe('EventService', () => {
       expect(executions).toHaveLength(2);
     });
 
+    it('should suppress re-entry while an execution is waiting', async () => {
+      const contact = await factories.createContact({projectId});
+      const workflow = await factories.createWorkflow({
+        projectId,
+        enabled: true,
+        allowReentry: true,
+        triggerType: WorkflowTriggerType.EVENT,
+        triggerConfig: {eventName: 'waiting.reentry'},
+      });
+
+      await prisma.workflowExecution.create({
+        data: {
+          workflowId: workflow.id,
+          contactId: contact.id,
+          status: WorkflowExecutionStatus.WAITING,
+        },
+      });
+
+      await EventService.trackEvent(projectId, 'waiting.reentry', contact.id);
+
+      const executions = await prisma.workflowExecution.findMany({
+        where: {workflowId: workflow.id, contactId: contact.id},
+      });
+      expect(executions).toHaveLength(1);
+      expect(executions[0]?.status).toBe(WorkflowExecutionStatus.WAITING);
+    });
+
+    it('should permit re-entry after a previous execution was cancelled', async () => {
+      const contact = await factories.createContact({projectId});
+      const workflow = await factories.createWorkflow({
+        projectId,
+        enabled: true,
+        allowReentry: true,
+        triggerType: WorkflowTriggerType.EVENT,
+        triggerConfig: {eventName: 'cancelled.reentry'},
+      });
+
+      await prisma.workflowExecution.create({
+        data: {
+          workflowId: workflow.id,
+          contactId: contact.id,
+          status: WorkflowExecutionStatus.CANCELLED,
+          completedAt: new Date(),
+        },
+      });
+
+      await EventService.trackEvent(projectId, 'cancelled.reentry', contact.id);
+
+      const executions = await prisma.workflowExecution.findMany({
+        where: {workflowId: workflow.id, contactId: contact.id},
+        orderBy: {createdAt: 'asc'},
+      });
+      expect(executions).toHaveLength(2);
+      expect(executions[0]?.status).toBe(WorkflowExecutionStatus.CANCELLED);
+    });
+
     it('should trigger multiple workflows listening for same event', async () => {
       const contact = await factories.createContact({projectId});
 

@@ -107,6 +107,34 @@ export class WorkflowService {
       throw new HttpException(404, 'Workflow not found');
     }
 
+    // Resolve target workflows for ENROLL_IN_WORKFLOW and REMOVE_FROM_WORKFLOW steps so the
+    // dashboard can render the target's name (mirroring how SEND_EMAIL
+    // steps carry step.template = {id, name}). config.workflowId is a
+    // JSON string, not a Prisma relation, so we do this with a single
+    // batched lookup scoped to the same project.
+    const enrollTargetIds = Array.from(
+      new Set(
+        workflow.steps
+          .filter(s => s.type === 'ENROLL_IN_WORKFLOW' || s.type === 'REMOVE_FROM_WORKFLOW')
+          .map(s => (s.config as {workflowId?: string} | null)?.workflowId)
+          .filter((id): id is string => typeof id === 'string' && id.length > 0),
+      ),
+    );
+
+    if (enrollTargetIds.length > 0) {
+      const targets = await prisma.workflow.findMany({
+        where: {id: {in: enrollTargetIds}, projectId},
+        select: {id: true, name: true},
+      });
+      const byId = new Map(targets.map(t => [t.id, t]));
+      for (const step of workflow.steps) {
+        if (step.type !== 'ENROLL_IN_WORKFLOW' && step.type !== 'REMOVE_FROM_WORKFLOW') continue;
+        const targetId = (step.config as {workflowId?: string} | null)?.workflowId;
+        if (!targetId) continue;
+        (step as Record<string, unknown>).targetWorkflow = byId.get(targetId) ?? null;
+      }
+    }
+
     return workflow;
   }
 

@@ -380,6 +380,11 @@ export const WorkflowStepConfigSchemas = {
         (value.subscriptionAction && value.subscriptionAction !== 'none'),
       {message: 'Provide at least one field to update or a subscription action'},
     ),
+  enrollInWorkflow: z.object({
+    workflowId: uuid,
+    eventData: z.record(z.any()).optional(),
+  }),
+  removeFromWorkflow: z.object({workflowId: uuid}).strict(),
 };
 
 export const DomainSchemas = {

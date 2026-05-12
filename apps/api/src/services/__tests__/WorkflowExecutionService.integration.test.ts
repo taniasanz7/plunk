@@ -2,6 +2,7 @@ import {beforeEach, describe, expect, it, vi} from 'vitest';
 import {StepExecutionStatus, WorkflowExecutionStatus, WorkflowStepType} from '@plunk/db';
 import {toPrismaJson} from '@plunk/types';
 import {WorkflowExecutionService} from '../WorkflowExecutionService';
+import {QueueService} from '../QueueService';
 import {factories, getPrismaClient} from '../../../../../test/helpers';
 
 vi.mock('node:dns/promises', () => ({
@@ -828,7 +829,7 @@ describe('WorkflowExecutionService - Integration Tests', () => {
   // EXIT STEPS
   // ========================================
   describe('Exit Steps', () => {
-    it('should complete workflow when EXIT step is reached', async () => {
+    it('should mark workflow as exited when EXIT step is reached', async () => {
       const contact = await factories.createContact({projectId});
       const workflow = await factories.createWorkflow({projectId});
       const triggerStep = await prisma.workflowStep.findFirstOrThrow({
@@ -862,13 +863,13 @@ describe('WorkflowExecutionService - Integration Tests', () => {
       await WorkflowExecutionService.processStepExecution(execution.id, triggerStep.id);
       await WorkflowExecutionService.processStepExecution(execution.id, exitStep.id);
 
-      // Verify workflow completed
-      const completedExecution = await prisma.workflowExecution.findUnique({
+      // Verify workflow exited
+      const exitedExecution = await prisma.workflowExecution.findUnique({
         where: {id: execution.id},
       });
 
-      expect(completedExecution?.status).toBe(WorkflowExecutionStatus.COMPLETED);
-      expect(completedExecution?.completedAt).toBeDefined();
+      expect(exitedExecution?.status).toBe(WorkflowExecutionStatus.EXITED);
+      expect(exitedExecution?.completedAt).toBeDefined();
     });
   });
 
@@ -941,7 +942,7 @@ describe('WorkflowExecutionService - Integration Tests', () => {
         where: {id: execution.id},
       });
 
-      expect(completedExecution?.status).toBe(WorkflowExecutionStatus.COMPLETED);
+      expect(completedExecution?.status).toBe(WorkflowExecutionStatus.EXITED);
       expect(completedExecution?.context).toMatchObject({
         totalSpent: 999.99,
         orderId: {value: 'ORD-789', persistent: false},
@@ -1045,7 +1046,7 @@ describe('WorkflowExecutionService - Integration Tests', () => {
         include: {stepExecutions: true},
       });
 
-      expect(completedExecution?.status).toBe(WorkflowExecutionStatus.COMPLETED);
+      expect(completedExecution?.status).toBe(WorkflowExecutionStatus.EXITED);
       expect(completedExecution?.exitReason).toBe('first_open');
     });
 
@@ -1111,7 +1112,7 @@ describe('WorkflowExecutionService - Integration Tests', () => {
         where: {id: execution.id},
       });
 
-      expect(completedExecution?.status).toBe(WorkflowExecutionStatus.COMPLETED);
+      expect(completedExecution?.status).toBe(WorkflowExecutionStatus.EXITED);
       expect(completedExecution?.exitReason).toBe('matched');
     });
 
@@ -1177,7 +1178,7 @@ describe('WorkflowExecutionService - Integration Tests', () => {
         where: {id: execution.id},
       });
 
-      expect(completedExecution?.status).toBe(WorkflowExecutionStatus.COMPLETED);
+      expect(completedExecution?.status).toBe(WorkflowExecutionStatus.EXITED);
       expect(completedExecution?.exitReason).toBe('engaged');
     });
   });
@@ -1262,6 +1263,268 @@ describe('WorkflowExecutionService - Integration Tests', () => {
       });
 
       expect(body.contact.email).toBe('test@example.com');
+    });
+  });
+
+  describe('Remove from Workflow', () => {
+    it('cancels RUNNING and WAITING target executions while leaving completed executions unchanged', async () => {
+      const contact = await factories.createContact({projectId});
+      const currentWorkflow = await factories.createWorkflow({projectId});
+      const targetWorkflow = await factories.createWorkflow({projectId});
+
+      const removeStep = await prisma.workflowStep.create({
+        data: {
+          workflowId: currentWorkflow.id,
+          type: 'REMOVE_FROM_WORKFLOW' as WorkflowStepType,
+          name: 'Remove from target workflow',
+          position: {x: 100, y: 0},
+          config: toPrismaJson({workflowId: targetWorkflow.id}),
+        },
+      });
+
+      const currentExecution = await prisma.workflowExecution.create({
+        data: {
+          workflowId: currentWorkflow.id,
+          contactId: contact.id,
+          status: WorkflowExecutionStatus.RUNNING,
+          currentStepId: removeStep.id,
+        },
+      });
+      const running = await prisma.workflowExecution.create({
+        data: {workflowId: targetWorkflow.id, contactId: contact.id, status: WorkflowExecutionStatus.RUNNING},
+      });
+      const waiting = await prisma.workflowExecution.create({
+        data: {workflowId: targetWorkflow.id, contactId: contact.id, status: WorkflowExecutionStatus.WAITING},
+      });
+      const completedAt = new Date('2026-01-01T00:00:00.000Z');
+      const completed = await prisma.workflowExecution.create({
+        data: {
+          workflowId: targetWorkflow.id,
+          contactId: contact.id,
+          status: WorkflowExecutionStatus.COMPLETED,
+          completedAt,
+        },
+      });
+
+      await WorkflowExecutionService.processStepExecution(currentExecution.id, removeStep.id);
+
+      const [updatedRunning, updatedWaiting, unchangedCompleted, stepExecution, updatedCurrent] = await Promise.all([
+        prisma.workflowExecution.findUniqueOrThrow({where: {id: running.id}}),
+        prisma.workflowExecution.findUniqueOrThrow({where: {id: waiting.id}}),
+        prisma.workflowExecution.findUniqueOrThrow({where: {id: completed.id}}),
+        prisma.workflowStepExecution.findFirstOrThrow({
+          where: {executionId: currentExecution.id, stepId: removeStep.id},
+        }),
+        prisma.workflowExecution.findUniqueOrThrow({where: {id: currentExecution.id}}),
+      ]);
+
+      for (const removed of [updatedRunning, updatedWaiting]) {
+        expect(removed.status).toBe(WorkflowExecutionStatus.CANCELLED);
+        expect(removed.completedAt).not.toBeNull();
+        expect(removed.exitReason).toBe(`Removed by workflow ${currentWorkflow.id}`);
+      }
+      expect(unchangedCompleted.status).toBe(WorkflowExecutionStatus.COMPLETED);
+      expect(unchangedCompleted.completedAt).toEqual(completedAt);
+      expect(stepExecution.output).toEqual({targetWorkflowId: targetWorkflow.id, removed: 2});
+      expect(updatedCurrent.status).toBe(WorkflowExecutionStatus.COMPLETED);
+    });
+
+    it('prevents a removed WAIT_FOR_EVENT execution from resuming by event or timeout', async () => {
+      const removedContact = await factories.createContact({projectId});
+      const otherContact = await factories.createContact({projectId});
+      const currentWorkflow = await factories.createWorkflow({projectId});
+      const targetWorkflow = await factories.createWorkflow({projectId});
+      const targetTrigger = await prisma.workflowStep.findFirstOrThrow({
+        where: {workflowId: targetWorkflow.id, type: WorkflowStepType.TRIGGER},
+      });
+      const waitStep = await prisma.workflowStep.create({
+        data: {
+          workflowId: targetWorkflow.id,
+          type: WorkflowStepType.WAIT_FOR_EVENT,
+          name: 'Wait for cancellation regression event',
+          position: {x: 100, y: 0},
+          config: toPrismaJson({eventName: 'cancellation.regression', timeout: 3600}),
+        },
+      });
+      const exitStep = await prisma.workflowStep.create({
+        data: {
+          workflowId: targetWorkflow.id,
+          type: WorkflowStepType.EXIT,
+          name: 'Must not execute after removal',
+          position: {x: 200, y: 0},
+          config: toPrismaJson({reason: 'resumed_after_removal'}),
+        },
+      });
+      await prisma.workflowTransition.createMany({
+        data: [
+          {fromStepId: targetTrigger.id, toStepId: waitStep.id},
+          {fromStepId: waitStep.id, toStepId: exitStep.id},
+        ],
+      });
+
+      const [removedExecution, otherExecution] = await Promise.all(
+        [removedContact.id, otherContact.id].map(contactId =>
+          prisma.workflowExecution.create({
+            data: {
+              workflowId: targetWorkflow.id,
+              contactId,
+              status: WorkflowExecutionStatus.RUNNING,
+              currentStepId: targetTrigger.id,
+            },
+          }),
+        ),
+      );
+      await Promise.all([
+        WorkflowExecutionService.processStepExecution(removedExecution.id, targetTrigger.id),
+        WorkflowExecutionService.processStepExecution(otherExecution.id, targetTrigger.id),
+      ]);
+
+      const removedWaitExecution = await prisma.workflowStepExecution.findFirstOrThrow({
+        where: {executionId: removedExecution.id, stepId: waitStep.id},
+      });
+      expect(removedWaitExecution.status).toBe(StepExecutionStatus.WAITING);
+      expect((await prisma.workflowExecution.findUniqueOrThrow({where: {id: removedExecution.id}})).status).toBe(
+        WorkflowExecutionStatus.WAITING,
+      );
+      expect((await prisma.workflowExecution.findUniqueOrThrow({where: {id: otherExecution.id}})).status).toBe(
+        WorkflowExecutionStatus.WAITING,
+      );
+
+      const removeStep = await prisma.workflowStep.create({
+        data: {
+          workflowId: currentWorkflow.id,
+          type: WorkflowStepType.REMOVE_FROM_WORKFLOW,
+          name: 'Remove from target workflow',
+          position: {x: 100, y: 0},
+          config: toPrismaJson({workflowId: targetWorkflow.id}),
+        },
+      });
+      const currentExecution = await prisma.workflowExecution.create({
+        data: {
+          workflowId: currentWorkflow.id,
+          contactId: removedContact.id,
+          status: WorkflowExecutionStatus.RUNNING,
+          currentStepId: removeStep.id,
+        },
+      });
+      await WorkflowExecutionService.processStepExecution(currentExecution.id, removeStep.id);
+
+      await WorkflowExecutionService.handleEvent(projectId, 'cancellation.regression', removedContact.id);
+      await WorkflowExecutionService.processTimeout(removedExecution.id, waitStep.id, removedWaitExecution.id);
+
+      const [cancelledExecution, skippedWaitExecution, unchangedOtherExecution, unchangedOtherWaitExecution] =
+        await Promise.all([
+          prisma.workflowExecution.findUniqueOrThrow({where: {id: removedExecution.id}}),
+          prisma.workflowStepExecution.findUniqueOrThrow({where: {id: removedWaitExecution.id}}),
+          prisma.workflowExecution.findUniqueOrThrow({where: {id: otherExecution.id}}),
+          prisma.workflowStepExecution.findFirstOrThrow({where: {executionId: otherExecution.id, stepId: waitStep.id}}),
+        ]);
+
+      expect(cancelledExecution.status).toBe(WorkflowExecutionStatus.CANCELLED);
+      expect(skippedWaitExecution.status).toBe(StepExecutionStatus.SKIPPED);
+      expect(await prisma.workflowStepExecution.count({where: {executionId: removedExecution.id, stepId: exitStep.id}})).toBe(
+        0,
+      );
+      expect(unchangedOtherExecution.status).toBe(WorkflowExecutionStatus.WAITING);
+      expect(unchangedOtherWaitExecution.status).toBe(StepExecutionStatus.WAITING);
+      expect(QueueService.cancelWorkflowTimeout).toHaveBeenCalledWith(removedWaitExecution.id);
+    });
+
+    it('succeeds as an idempotent no-op when no active target execution exists', async () => {
+      const contact = await factories.createContact({projectId});
+      const currentWorkflow = await factories.createWorkflow({projectId});
+      const targetWorkflow = await factories.createWorkflow({projectId});
+      const removeStep = await prisma.workflowStep.create({
+        data: {
+          workflowId: currentWorkflow.id,
+          type: WorkflowStepType.REMOVE_FROM_WORKFLOW,
+          name: 'Remove from target workflow',
+          position: {x: 100, y: 0},
+          config: toPrismaJson({workflowId: targetWorkflow.id}),
+        },
+      });
+      const currentExecution = await prisma.workflowExecution.create({
+        data: {
+          workflowId: currentWorkflow.id,
+          contactId: contact.id,
+          status: WorkflowExecutionStatus.RUNNING,
+          currentStepId: removeStep.id,
+        },
+      });
+
+      await WorkflowExecutionService.processStepExecution(currentExecution.id, removeStep.id);
+
+      const stepExecution = await prisma.workflowStepExecution.findFirstOrThrow({
+        where: {executionId: currentExecution.id, stepId: removeStep.id},
+      });
+      expect(stepExecution.status).toBe(StepExecutionStatus.COMPLETED);
+      expect(stepExecution.output).toEqual({targetWorkflowId: targetWorkflow.id, removed: 0});
+    });
+
+    it('rejects a cross-project target without cancelling its execution', async () => {
+      const contact = await factories.createContact({projectId});
+      const currentWorkflow = await factories.createWorkflow({projectId});
+      const {project: otherProject} = await factories.createUserWithProject();
+      const targetWorkflow = await factories.createWorkflow({projectId: otherProject.id});
+      const removeStep = await prisma.workflowStep.create({
+        data: {
+          workflowId: currentWorkflow.id,
+          type: WorkflowStepType.REMOVE_FROM_WORKFLOW,
+          name: 'Remove from cross-project workflow',
+          position: {x: 100, y: 0},
+          config: toPrismaJson({workflowId: targetWorkflow.id}),
+        },
+      });
+      const currentExecution = await prisma.workflowExecution.create({
+        data: {
+          workflowId: currentWorkflow.id,
+          contactId: contact.id,
+          status: WorkflowExecutionStatus.RUNNING,
+          currentStepId: removeStep.id,
+        },
+      });
+      const targetExecution = await prisma.workflowExecution.create({
+        data: {workflowId: targetWorkflow.id, contactId: contact.id, status: WorkflowExecutionStatus.RUNNING},
+      });
+
+      await expect(WorkflowExecutionService.processStepExecution(currentExecution.id, removeStep.id)).rejects.toThrow(
+        'Target workflow not found in this project',
+      );
+
+      const unchangedTarget = await prisma.workflowExecution.findUniqueOrThrow({where: {id: targetExecution.id}});
+      expect(unchangedTarget.status).toBe(WorkflowExecutionStatus.RUNNING);
+      expect(unchangedTarget.completedAt).toBeNull();
+      expect(unchangedTarget.exitReason).toBeNull();
+    });
+
+    it('rejects the current workflow as its own target', async () => {
+      const contact = await factories.createContact({projectId});
+      const workflow = await factories.createWorkflow({projectId});
+      const removeStep = await prisma.workflowStep.create({
+        data: {
+          workflowId: workflow.id,
+          type: WorkflowStepType.REMOVE_FROM_WORKFLOW,
+          name: 'Remove from current workflow',
+          position: {x: 100, y: 0},
+          config: toPrismaJson({workflowId: workflow.id}),
+        },
+      });
+      const execution = await prisma.workflowExecution.create({
+        data: {
+          workflowId: workflow.id,
+          contactId: contact.id,
+          status: WorkflowExecutionStatus.RUNNING,
+          currentStepId: removeStep.id,
+        },
+      });
+
+      await expect(WorkflowExecutionService.processStepExecution(execution.id, removeStep.id)).rejects.toThrow(
+        'Cannot remove a contact from the current workflow',
+      );
+
+      const unchangedExecution = await prisma.workflowExecution.findUniqueOrThrow({where: {id: execution.id}});
+      expect(unchangedExecution.status).not.toBe(WorkflowExecutionStatus.CANCELLED);
+      expect(unchangedExecution.exitReason).toBeNull();
     });
   });
 });

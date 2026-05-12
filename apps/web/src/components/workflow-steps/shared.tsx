@@ -7,29 +7,34 @@ import {toast} from 'sonner';
 import {network} from '../../lib/network';
 
 export const STEP_TYPE_LABELS: Record<WorkflowStep['type'], string> = {
-  TRIGGER:        'Trigger',
-  SEND_EMAIL:     'Send Email',
-  DELAY:          'Delay',
-  WAIT_FOR_EVENT: 'Wait for Event',
-  CONDITION:      'Condition',
-  EXIT:           'Exit',
-  WEBHOOK:        'Webhook',
-  UPDATE_CONTACT: 'Update Contact',
+  TRIGGER:            'Trigger',
+  SEND_EMAIL:         'Send Email',
+  DELAY:              'Delay',
+  WAIT_FOR_EVENT:     'Wait for Event',
+  CONDITION:          'Condition',
+  EXIT:               'Exit',
+  WEBHOOK:            'Webhook',
+  UPDATE_CONTACT:     'Update Contact',
+  ENROLL_IN_WORKFLOW: 'Enroll in Workflow',
+  REMOVE_FROM_WORKFLOW: 'Remove from Workflow',
 };
 
 export const STEP_TYPE_DESCRIPTIONS: Record<WorkflowStep['type'], string> = {
-  TRIGGER:        'Starts the workflow when a specific event is received.',
-  SEND_EMAIL:     'Sends an email to the contact using a template you choose.',
-  DELAY:          'Pauses the workflow for a set amount of time before continuing.',
-  WAIT_FOR_EVENT: 'Waits until the contact triggers a specific event, then continues.',
-  CONDITION:      'Splits the flow based on contact data — each path leads to different steps.',
-  EXIT:           'Ends the workflow for the contact.',
-  WEBHOOK:        "Makes an HTTP request to an external URL with the contact's data.",
-  UPDATE_CONTACT: "Sets or updates fields on the contact's profile.",
+  TRIGGER:            'Starts the workflow when a specific event is received.',
+  SEND_EMAIL:         'Sends an email to the contact using a template you choose.',
+  DELAY:              'Pauses the workflow for a set amount of time before continuing.',
+  WAIT_FOR_EVENT:     'Waits until the contact triggers a specific event, then continues.',
+  CONDITION:          'Splits the flow based on contact data — each path leads to different steps.',
+  EXIT:               'Ends the workflow for the contact.',
+  WEBHOOK:            "Makes an HTTP request to an external URL with the contact's data.",
+  UPDATE_CONTACT:     "Sets or updates fields on the contact's profile.",
+  ENROLL_IN_WORKFLOW: 'Enrolls the current contact into another workflow (fire-and-forget).',
+  REMOVE_FROM_WORKFLOW: 'Removes the current contact from another workflow by cancelling active executions.',
 };
 
 export type StepWithTemplate = WorkflowStep & {
   template?: {id: string; name: string} | null;
+  targetWorkflow?: {id: string; name: string} | null;
 };
 
 export interface EditStepDialogProps {

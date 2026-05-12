@@ -1,6 +1,8 @@
 import {ConditionStepDialog} from './ConditionStepDialog';
 import {DelayStepDialog} from './DelayStepDialog';
+import {EnrollInWorkflowStepDialog} from './EnrollInWorkflowStepDialog';
 import {ExitStepDialog} from './ExitStepDialog';
+import {RemoveFromWorkflowStepDialog} from './RemoveFromWorkflowStepDialog';
 import {SendEmailStepDialog} from './SendEmailStepDialog';
 import {UpdateContactStepDialog} from './UpdateContactStepDialog';
 import {WaitForEventStepDialog} from './WaitForEventStepDialog';
@@ -21,6 +23,10 @@ export function EditStepDialog(props: EditStepDialogProps) {
       return <WebhookStepDialog {...props} />;
     case 'UPDATE_CONTACT':
       return <UpdateContactStepDialog {...props} />;
+    case 'ENROLL_IN_WORKFLOW':
+      return <EnrollInWorkflowStepDialog {...props} />;
+    case 'REMOVE_FROM_WORKFLOW':
+      return <RemoveFromWorkflowStepDialog {...props} />;
     case 'EXIT':
       return <ExitStepDialog {...props} />;
     default:
