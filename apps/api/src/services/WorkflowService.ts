@@ -949,6 +949,7 @@ export class WorkflowService {
     page = 1,
     pageSize = 20,
     status?: WorkflowExecutionStatus,
+    contactId?: string,
   ) {
     // Verify workflow belongs to project
     await this.get(projectId, workflowId);
@@ -958,6 +959,7 @@ export class WorkflowService {
     const where: Prisma.WorkflowExecutionWhereInput = {
       workflowId,
       ...(status ? {status} : {}),
+      ...(contactId ? {contactId} : {}),
     };
 
     const [executions, total] = await Promise.all([

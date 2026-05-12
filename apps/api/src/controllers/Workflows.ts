@@ -343,12 +343,13 @@ export class Workflows {
     const page = parseInt(req.query.page as string) || 1;
     const pageSize = Math.min(parseInt(req.query.pageSize as string) || 20, 100);
     const status = req.query.status as WorkflowExecutionStatus | undefined;
+    const contactId = req.query.contactId as string | undefined;
 
     if (!workflowId) {
       return res.status(400).json({error: 'Workflow ID is required'});
     }
 
-    const result = await WorkflowService.listExecutions(auth.projectId!, workflowId, page, pageSize, status);
+    const result = await WorkflowService.listExecutions(auth.projectId!, workflowId, page, pageSize, status, contactId);
 
     return res.status(200).json(result);
   }
