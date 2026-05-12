@@ -1,4 +1,5 @@
 import {Controller, Delete, Get, Middleware, Patch, Post} from '@overnightjs/core';
+import {WorkflowExecutionStatus} from '@plunk/db';
 import type {NextFunction, Request, Response} from 'express';
 import multer from 'multer';
 import {ContactSchemas} from '@plunk/shared';
@@ -122,6 +123,51 @@ export class Contacts {
     const contact = await ContactService.get(auth.projectId!, contactId);
 
     return res.status(200).json(contact);
+  }
+
+  /**
+   * GET /contacts/:id/executions
+   * List a contact's workflow executions across all workflows in the project.
+   * Optional filters: `status` (WorkflowExecutionStatus enum) and `workflowId`.
+   * Pagination follows the same offset shape as GET /workflows/:id/executions.
+   */
+  @Get(':id/executions')
+  @Middleware([requireAuth, requireEmailVerified])
+  @CatchAsync
+  public async listExecutions(req: Request, res: Response, _next: NextFunction) {
+    const auth = res.locals.auth;
+    const contactId = req.params.id;
+    const page = parseInt(req.query.page as string) || 1;
+    const pageSize = Math.min(parseInt(req.query.pageSize as string) || 20, 100);
+
+    if (!contactId) {
+      return res.status(400).json({error: 'Contact ID is required'});
+    }
+
+    // Validate status against the WorkflowExecutionStatus enum
+    const statusParam = req.query.status as string | undefined;
+    let status: WorkflowExecutionStatus | undefined;
+    if (statusParam) {
+      if (!(statusParam in WorkflowExecutionStatus)) {
+        return res.status(400).json({
+          error: `Invalid status. Must be one of: ${Object.values(WorkflowExecutionStatus).join(', ')}`,
+        });
+      }
+      status = statusParam as WorkflowExecutionStatus;
+    }
+
+    const workflowId = (req.query.workflowId as string | undefined) || undefined;
+
+    const result = await ContactService.listExecutions(
+      auth.projectId!,
+      contactId,
+      page,
+      pageSize,
+      status,
+      workflowId,
+    );
+
+    return res.status(200).json(result);
   }
 
   /**

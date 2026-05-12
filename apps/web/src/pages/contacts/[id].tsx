@@ -17,9 +17,10 @@ import Link from 'next/link';
 import {NextSeo} from 'next-seo';
 import {useRouter} from 'next/router';
 import {useEffect, useState} from 'react';
+import {ActivityFeed} from '../../components/ActivityFeed';
+import {ContactWorkflows} from '../../components/ContactWorkflows';
 import {DashboardLayout} from '../../components/DashboardLayout';
 import {KeyValueEditor} from '../../components/KeyValueEditor';
-import {ActivityFeed} from '../../components/ActivityFeed';
 import {network} from '../../lib/network';
 import {toast} from 'sonner';
 import useSWR from 'swr';
@@ -196,6 +197,9 @@ export default function ContactDetailPage() {
                   </form>
                 </CardContent>
               </Card>
+
+              {/* Workflow Executions */}
+              <ContactWorkflows contactId={id as string} />
 
               {/* Activity Feed */}
               <Card>

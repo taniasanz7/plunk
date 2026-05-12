@@ -1,4 +1,4 @@
-import {type Contact, Prisma} from '@plunk/db';
+import {type Contact, Prisma, type WorkflowExecutionStatus} from '@plunk/db';
 import type {CursorPaginatedResponse, FilterCondition, FilterGroup} from '@plunk/types';
 import {toPrismaJson} from '@plunk/types';
 
@@ -74,6 +74,54 @@ export class ContactService {
     }
 
     return contact;
+  }
+
+  /**
+   * List all workflow executions for a contact (across every workflow in the project)
+   * with optional status / workflowId filters. Uses offset pagination to match the
+   * existing `GET /workflows/:id/executions` endpoint shape.
+   */
+  public static async listExecutions(
+    projectId: string,
+    contactId: string,
+    page = 1,
+    pageSize = 20,
+    status?: WorkflowExecutionStatus,
+    workflowId?: string,
+  ) {
+    // Verify the contact belongs to the project (404s otherwise)
+    await this.get(projectId, contactId);
+
+    const skip = (page - 1) * pageSize;
+
+    const where: Prisma.WorkflowExecutionWhereInput = {
+      contactId,
+      workflow: {projectId},
+      ...(status ? {status} : {}),
+      ...(workflowId ? {workflowId} : {}),
+    };
+
+    const [executions, total] = await Promise.all([
+      prisma.workflowExecution.findMany({
+        where,
+        skip,
+        take: pageSize,
+        orderBy: {startedAt: 'desc'},
+        include: {
+          workflow: {select: {id: true, name: true}},
+          currentStep: {select: {id: true, name: true, type: true}},
+        },
+      }),
+      prisma.workflowExecution.count({where}),
+    ]);
+
+    return {
+      executions,
+      total,
+      page,
+      pageSize,
+      totalPages: Math.ceil(total / pageSize),
+    };
   }
 
   /**
