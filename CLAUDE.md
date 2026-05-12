@@ -154,6 +154,9 @@ Required for builds and deployment (see turbo.json and .env.example):
     plus-addressing, domain existence, and MX records
 - Security (optional): `AUTO_PROJECT_DISABLE` (default: true) - Controls whether projects are automatically disabled when
   bounce/complaint rate thresholds are exceeded
+- Outbound link annotation (optional):
+  - `PLUNK_LINK_CID_PARAM` (default: `cid`) - Default query-string key appended to `<a href>` URLs in compiled emails.
+    Per-project override and opt-out live on `Project.linkCidParam` / `Project.linkCidEnabled` (dashboard settings).
 - Attachment Limits (optional):
   - `MAX_ATTACHMENT_SIZE_MB` (default: 10) - Maximum total attachment size in megabytes per email. AWS SES supports up to 40 MB.
   - `MAX_ATTACHMENTS_COUNT` (default: 10) - Maximum number of attachments per email

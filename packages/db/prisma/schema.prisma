@@ -58,6 +58,13 @@ model Project {
   // Email Tracking
   tracking TrackingMode @default(ENABLED) // Open and click tracking mode
 
+  // Outbound link annotation
+  // Append the recipient's contact id as a query-string param to <a href> URLs in compiled emails.
+  // null = inherit env default (feature on); true/false = explicit per-project override.
+  linkCidEnabled Boolean?
+  // Custom query-string key. null = inherit env default (PLUNK_LINK_CID_PARAM, fallback "cid").
+  linkCidParam   String?
+
   // Localization
   language String @default("en") // Language code for customer-facing content (ISO 639-1)
 

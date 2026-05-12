@@ -87,6 +87,15 @@ export const ProjectSchemas = {
       .string()
       .regex(/^[a-z]{2}(-[A-Z]{2})?$/)
       .optional(),
+    // Outbound-link contact-id annotation overrides (patch #4).
+    // `null` clears the project-level override and falls back to the env default.
+    linkCidEnabled: z.boolean().nullable().optional(),
+    linkCidParam: z
+      .string()
+      .trim()
+      .regex(/^[A-Za-z0-9_-]{1,64}$/, 'Use letters, numbers, underscore, or dash (max 64 chars)')
+      .nullable()
+      .optional(),
   }),
 } as const;
 

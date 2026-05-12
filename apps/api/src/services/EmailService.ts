@@ -3,7 +3,7 @@ import {EmailSourceType, EmailStatus, TrackingMode} from '@plunk/db';
 import {toPrismaJson} from '@plunk/types';
 import signale from 'signale';
 
-import {DASHBOARD_URI, LANDING_URI, STRIPE_ENABLED} from '../app/constants.js';
+import {API_URI, DASHBOARD_URI, LANDING_URI, PLUNK_LINK_CID_PARAM, STRIPE_ENABLED} from '../app/constants.js';
 import {prisma} from '../database/prisma.js';
 import {HttpException} from '../exceptions/index.js';
 import {createTranslatorSync, renderTemplate} from '@plunk/shared';
@@ -20,6 +20,129 @@ interface Attachment {
   contentType: string;
   contentId?: string;
   disposition?: 'attachment' | 'inline';
+}
+
+// ---------------------------------------------------------------------------
+// Outbound-link contact-id annotation
+// ---------------------------------------------------------------------------
+// These helpers are kept at module scope (rather than as private statics on
+// EmailService) so they are trivially unit-testable as pure functions.
+
+/**
+ * Hosts whose URLs are "internal" to this Plunk instance — unsubscribe/manage/
+ * subscribe links, the API itself, the dashboard, the landing page. We never
+ * append the cid param to these.
+ */
+const INTERNAL_HOSTS: ReadonlySet<string> = new Set(
+  [DASHBOARD_URI, API_URI, LANDING_URI]
+    .map(uri => {
+      try {
+        return new URL(uri).host.toLowerCase();
+      } catch {
+        return '';
+      }
+    })
+    .filter(Boolean),
+);
+
+/** Allow letters, digits, `_` and `-` in custom param names. Anything else falls back to the env default. */
+const SAFE_PARAM_NAME = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** Resolve the effective query-string param name for this project (custom override, else env default, else "cid"). */
+export function projectLinkCidParam(project: {linkCidParam?: string | null}): string {
+  const override = project.linkCidParam?.trim();
+  if (override && SAFE_PARAM_NAME.test(override)) {
+    return override;
+  }
+  return PLUNK_LINK_CID_PARAM;
+}
+
+/**
+ * Decide whether a given href should have the cid param appended.
+ * Returns the rewritten URL, or the original string if it should be left untouched.
+ */
+export function rewriteHrefWithCid(href: string, contactId: string, param: string): string {
+  // Empty / whitespace-only — leave alone.
+  const trimmed = href.trim();
+  if (!trimmed) return href;
+
+  // Non-http(s) schemes: mailto:, tel:, sms:, javascript:, data:, ftp:, etc. Skip.
+  if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed) && !/^https?:/i.test(trimmed)) {
+    return href;
+  }
+
+  // In-document anchors — purely client-side, no recipient context needed.
+  if (trimmed.startsWith('#')) return href;
+
+  // Template variables that weren't rendered — appending ?cid=… to an invalid URL would
+  // corrupt them. Leave the rendering layer to report the missing variable.
+  if (trimmed.includes('{{') || trimmed.includes('}}')) return href;
+
+  // Build a URL to detect hosts and existing query strings. Protocol-relative ("//host/..")
+  // and root-relative ("/path") URLs go to the dashboard host as a sensible base.
+  let url: URL;
+  try {
+    if (/^https?:/i.test(trimmed)) {
+      url = new URL(trimmed);
+    } else if (trimmed.startsWith('//')) {
+      url = new URL(`https:${trimmed}`);
+    } else if (trimmed.startsWith('/')) {
+      // Relative path — treat as internal to the dashboard. We don't have enough context
+      // to know which host the recipient will resolve it against, so skip annotation.
+      return href;
+    } else {
+      // Unknown shape (e.g. "example.com/foo" without scheme). Be conservative.
+      return href;
+    }
+  } catch {
+    return href;
+  }
+
+  // Plunk-internal links: unsubscribe / manage / subscribe footer + API/dashboard/landing.
+  if (INTERNAL_HOSTS.has(url.host.toLowerCase())) return href;
+
+  // Idempotent — never re-append if the param is already present.
+  if (url.searchParams.has(param)) return href;
+
+  url.searchParams.append(param, contactId);
+
+  // Preserve the original scheme prefix shape (protocol-relative URLs round-trip via URL
+  // back to "https://host/..", which is what we want here — protocol-relative links in
+  // email clients are unreliable anyway).
+  return url.toString();
+}
+
+/**
+ * Walk every `<a … href="…">` in `html` and append the contact-id query param to
+ * URLs that should carry it. Skips contents of `<style>` and `<script>` blocks.
+ */
+export function annotateLinksWithCid(html: string, contactId: string, param: string): string {
+  if (!html || !contactId) return html;
+
+  // Strip <style>/<script> bodies before scanning, then splice them back in. This avoids
+  // accidentally rewriting CSS background-image url(...) or JS string literals that
+  // happen to look like an anchor tag.
+  const placeholders: string[] = [];
+  const stripped = html.replace(/<(style|script)\b[^>]*>[\s\S]*?<\/\1>/gi, match => {
+    placeholders.push(match);
+    return ` PLUNK_HTML_BLOCK_${placeholders.length - 1} `;
+  });
+
+  // Match each <a … href="…"> / href='…'. Attribute values without quotes are not
+  // matched on purpose — Plunk's templates always quote attributes, and unquoted href
+  // values are rare and brittle to mutate.
+  const rewritten = stripped.replace(
+    /(<a\b[^>]*?\shref\s*=\s*)(["'])(.*?)\2/gi,
+    (whole, prefix: string, quote: string, hrefValue: string) => {
+      const next = rewriteHrefWithCid(hrefValue, contactId, param);
+      if (next === hrefValue) return whole;
+      // Re-encode the quote in the replacement value so we don't break the attribute.
+      const escaped = next.replace(new RegExp(quote, 'g'), quote === '"' ? '&quot;' : '&#39;');
+      return `${prefix}${quote}${escaped}${quote}`;
+    },
+  );
+
+  return rewritten.replace(/ PLUNK_HTML_BLOCK_(\d+) /g, (_, idx: string) => placeholders[Number(idx)] ?? '');
 }
 
 interface SendEmailParams {
@@ -1124,6 +1247,16 @@ export class EmailService {
       html = html.replace('</body>', `${footerHtml}</body>`);
     } else {
       html = `${html}${footerHtml}`;
+    }
+
+    // Auto-annotate outbound <a href> URLs with the contact id so landing pages can
+    // identify the visitor without manual {{id}} placeholders in every template link.
+    // Disabled if the project explicitly opts out via Project.linkCidEnabled = false.
+    if (project.linkCidEnabled !== false) {
+      const param = projectLinkCidParam(project);
+      if (param) {
+        html = annotateLinksWithCid(html, contact.id, param);
+      }
     }
 
     return html;

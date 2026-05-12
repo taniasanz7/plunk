@@ -12,7 +12,7 @@ export interface ConfigResponse {
     billing: {enabled: boolean};
     storage: {s3Enabled: boolean};
     authProviders: {github: boolean; google: boolean};
-    email: {trackingToggleEnabled: boolean};
+    email: {trackingToggleEnabled: boolean; linkCidParamDefault: string};
     smtp: {
       enabled: boolean;
       domain: string | null;

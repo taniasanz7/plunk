@@ -82,6 +82,12 @@ export const STRIPE_PRICE_ONBOARDING = validateEnv('STRIPE_PRICE_ONBOARDING', ''
 export const STRIPE_PRICE_EMAIL_USAGE = validateEnv('STRIPE_PRICE_EMAIL_USAGE', ''); // Metered usage price for pay-per-email
 export const STRIPE_METER_EVENT_NAME = validateEnv('STRIPE_METER_EVENT_NAME', 'emails'); // Meter event name (API key in Stripe)
 
+// Outbound link annotation
+// Default query-string key appended to <a href> URLs in compiled emails so that the
+// recipient's contact id is forwarded to the landing page. Per-project override lives
+// on Project.linkCidParam; per-project opt-out lives on Project.linkCidEnabled.
+export const PLUNK_LINK_CID_PARAM = validateEnv('PLUNK_LINK_CID_PARAM', 'cid');
+
 // Email Tracking
 export const SES_CONFIGURATION_SET = validateEnv('SES_CONFIGURATION_SET', 'plunk-configuration-set');
 export const SES_CONFIGURATION_SET_NO_TRACKING = validateEnv(

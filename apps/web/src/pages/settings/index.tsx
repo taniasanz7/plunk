@@ -32,6 +32,7 @@ import {
   SelectItemWithDescription,
   SelectTrigger,
   SelectValue,
+  Switch,
   Tabs,
   TabsContent,
   TabsList,
@@ -168,12 +169,16 @@ export default function Settings() {
     }
   }, [router]);
 
+  const defaultLinkCidParam = config?.features.email.linkCidParamDefault ?? 'cid';
+
   const form = useForm<z.infer<typeof ProjectSchemas.update>>({
     resolver: zodResolver(ProjectSchemas.update),
     defaultValues: {
       name: activeProject?.name || '',
       tracking: activeProject?.tracking ?? TrackingMode.ENABLED,
       language: activeProject?.language || 'en',
+      linkCidEnabled: activeProject?.linkCidEnabled ?? null,
+      linkCidParam: activeProject?.linkCidParam ?? null,
     },
   });
 
@@ -184,6 +189,8 @@ export default function Settings() {
         name: activeProject.name,
         tracking: activeProject.tracking ?? TrackingMode.ENABLED,
         language: activeProject.language || 'en',
+        linkCidEnabled: activeProject.linkCidEnabled ?? null,
+        linkCidParam: activeProject.linkCidParam ?? null,
       });
     }
   }, [activeProject, form]);
@@ -486,6 +493,56 @@ export default function Settings() {
                             </Select>
                             <FormDescription>
                               Language for customer-facing pages (unsubscribe, preferences) and email footers.
+                            </FormDescription>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+
+                      {/* Outbound link contact-id annotation (patch #4) */}
+                      <FormField
+                        control={form.control}
+                        name="linkCidEnabled"
+                        render={({field}) => (
+                          <FormItem className="flex flex-row items-center justify-between rounded-lg border border-neutral-200 p-4">
+                            <div className="space-y-0.5 pr-4">
+                              <FormLabel>Append contact ID to outbound links</FormLabel>
+                              <FormDescription>
+                                Automatically adds a query-string parameter (default{' '}
+                                <code className="rounded bg-neutral-100 px-1 text-xs">?{defaultLinkCidParam}=…</code>)
+                                with the recipient&apos;s contact ID to every <code>&lt;a href&gt;</code> in compiled
+                                emails. Plunk-internal links (unsubscribe, manage) and template variables are skipped.
+                              </FormDescription>
+                            </div>
+                            <FormControl>
+                              <Switch
+                                checked={field.value !== false}
+                                onCheckedChange={checked => field.onChange(checked ? null : false)}
+                              />
+                            </FormControl>
+                          </FormItem>
+                        )}
+                      />
+
+                      <FormField
+                        control={form.control}
+                        name="linkCidParam"
+                        render={({field}) => (
+                          <FormItem>
+                            <FormLabel>Query parameter name</FormLabel>
+                            <FormControl>
+                              <Input
+                                placeholder={defaultLinkCidParam}
+                                value={field.value ?? ''}
+                                onChange={e => {
+                                  const value = e.target.value.trim();
+                                  field.onChange(value === '' ? null : value);
+                                }}
+                              />
+                            </FormControl>
+                            <FormDescription>
+                              Override the query-string key. Letters, numbers, underscores, or dashes only. Leave empty
+                              to use the instance default ({defaultLinkCidParam}). Ignored when the toggle above is off.
                             </FormDescription>
                             <FormMessage />
                           </FormItem>

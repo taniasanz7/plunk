@@ -10,6 +10,7 @@ import {
   LANDING_URI,
   MAIL_FROM_SUBDOMAIN,
   NODE_ENV,
+  PLUNK_LINK_CID_PARAM,
   S3_ENABLED,
   SMTP_DOMAIN,
   SMTP_ENABLED,
@@ -49,6 +50,7 @@ export class Config {
         },
         email: {
           trackingToggleEnabled: TRACKING_TOGGLE_ENABLED,
+          linkCidParamDefault: PLUNK_LINK_CID_PARAM,
         },
         smtp: {
           enabled: SMTP_ENABLED,
