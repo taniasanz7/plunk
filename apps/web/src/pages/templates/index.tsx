@@ -13,7 +13,7 @@ import {EmptyState} from '@plunk/ui';
 import {DashboardLayout} from '../../components/DashboardLayout';
 import {network} from '../../lib/network';
 import {formatRelativeTime} from '../../lib/dateUtils';
-import {Calendar, Copy, Edit, FileText, Plus, Search, Trash2, X} from 'lucide-react';
+import {Calendar, Copy, Edit, FileText, LayoutGrid, List, Plus, Search, Trash2, X} from 'lucide-react';
 import {NextSeo} from 'next-seo';
 import Link from 'next/link';
 import {useEffect, useState} from 'react';
@@ -21,13 +21,31 @@ import {toast} from 'sonner';
 import useSWR from 'swr';
 import dayjs from 'dayjs';
 
+type ViewMode = 'card' | 'table';
+const VIEW_STORAGE_KEY = 'plunk:templates:view';
+
 export default function TemplatesPage() {
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
   const [searchInput, setSearchInput] = useState('');
   const [typeFilter, setTypeFilter] = useState<'ALL' | 'TRANSACTIONAL' | 'MARKETING' | 'HEADLESS'>('ALL');
+  const [view, setView] = useState<ViewMode>('card');
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [templateToDelete, setTemplateToDelete] = useState<string | null>(null);
+
+  // Restore the view preference from localStorage on first mount (client only).
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const stored = window.localStorage.getItem(VIEW_STORAGE_KEY);
+    if (stored === 'card' || stored === 'table') setView(stored);
+  }, []);
+
+  const handleViewChange = (next: ViewMode) => {
+    setView(next);
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(VIEW_STORAGE_KEY, next);
+    }
+  };
 
   const {data, mutate, isLoading} = useSWR<PaginatedResponse<Template>>(
     `/templates?page=${page}&pageSize=20${search ? `&search=${search}` : ''}${typeFilter !== 'ALL' ? `&type=${typeFilter}` : ''}`,
@@ -128,21 +146,47 @@ export default function TemplatesPage() {
                 </Button>
               ))}
             </div>
+            <div className="flex gap-0.5 shrink-0 rounded-md border border-neutral-200 p-px">
+              <Button
+                type="button"
+                onClick={() => handleViewChange('card')}
+                variant={view === 'card' ? 'default' : 'ghost'}
+                size="sm"
+                className="h-7 px-2"
+                aria-label="Card view"
+                aria-pressed={view === 'card'}
+                title="Card view"
+              >
+                <LayoutGrid className="h-4 w-4" />
+              </Button>
+              <Button
+                type="button"
+                onClick={() => handleViewChange('table')}
+                variant={view === 'table' ? 'default' : 'ghost'}
+                size="sm"
+                className="h-7 px-2"
+                aria-label="Table view"
+                aria-pressed={view === 'table'}
+                title="Table view"
+              >
+                <List className="h-4 w-4" />
+              </Button>
+            </div>
           </div>
 
           {/* Templates */}
-          <div>
-            {isLoading ? (
-              <Card>
-                <CardContent className="pt-6">
-                  <div className="flex items-center justify-center py-12">
-                    <IconSpinner />
-                  </div>
-                </CardContent>
-              </Card>
-            ) : data?.data.length === 0 ? (
-              <Card>
-                <CardContent>
+          {isLoading ? (
+            <Card>
+              <CardContent className="p-0">
+                <div className="flex items-center justify-center py-16">
+                  <IconSpinner />
+                </div>
+              </CardContent>
+            </Card>
+          ) : data?.data.length === 0 ? (
+            <Card>
+              <CardContent className="p-0">
+                <div className="px-6 py-12">
                   <EmptyState
                     icon={FileText}
                     title={search ? 'No templates match' : 'No templates yet'}
@@ -158,92 +202,288 @@ export default function TemplatesPage() {
                       ) : undefined
                     }
                   />
-                </CardContent>
-              </Card>
-            ) : (
-              <>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {data?.data.map(template => (
-                    <Card key={template.id} className="transition-colors hover:border-neutral-300 flex flex-col [&:has([data-card-link]:focus-visible)]:ring-2 [&:has([data-card-link]:focus-visible)]:ring-ring [&:has([data-card-link]:focus-visible)]:ring-offset-2">
-                      <Link
-                        href={`/templates/${template.id}`}
-                        data-card-link=""
-                        className="flex-1 block p-6 pb-4 hover:bg-neutral-50/50 transition-colors rounded-t-xl focus-visible:outline-none"
-                        aria-label={`Edit ${template.name}`}
+                </div>
+              </CardContent>
+            </Card>
+          ) : view === 'card' ? (
+            <>
+              {/* Card Grid View - rendered directly on the page background */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {data?.data.map(template => (
+                      <Card
+                        key={template.id}
+                        className="transition-colors hover:border-neutral-300 flex flex-col [&:has([data-card-link]:focus-visible)]:ring-2 [&:has([data-card-link]:focus-visible)]:ring-ring [&:has([data-card-link]:focus-visible)]:ring-offset-2"
                       >
-                        <div className="flex items-start justify-between gap-3 mb-3">
-                          <h3 className="font-semibold text-neutral-900 leading-snug">{template.name}</h3>
-                          <Badge
-                            className="capitalize shrink-0 mt-0.5"
-                            variant="neutral"
+                        <Link
+                          href={`/templates/${template.id}`}
+                          data-card-link=""
+                          className="flex-1 block p-6 pb-4 hover:bg-neutral-50/50 transition-colors rounded-t-xl focus-visible:outline-none"
+                          aria-label={`Edit ${template.name}`}
+                        >
+                          <div className="flex items-start justify-between gap-3 mb-3">
+                            <h3 className="font-semibold text-neutral-900 leading-snug">{template.name}</h3>
+                            <Badge className="capitalize shrink-0 mt-0.5" variant="neutral">
+                              {template.type.toLowerCase()}
+                            </Badge>
+                          </div>
+                          <p className="text-sm font-medium text-neutral-700 truncate">{template.subject}</p>
+                        </Link>
+                        <div className="px-6 py-3 border-t border-neutral-100 flex items-center justify-between">
+                          <div className="flex items-center gap-1.5 text-xs text-neutral-400">
+                            <Calendar className="h-3 w-3" />
+                            <div className="group relative inline-block cursor-help">
+                              <span>Updated {formatRelativeTime(template.updatedAt)}</span>
+                              <div className="hidden group-hover:block absolute z-10 w-48 p-2 bg-neutral-900 text-white text-xs rounded shadow-md bottom-full left-0 mb-1 whitespace-nowrap">
+                                {dayjs(template.updatedAt).format('DD MMMM YYYY, hh:mm')}
+                              </div>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <Button asChild variant="ghost" size="sm" title="Edit template">
+                              <Link href={`/templates/${template.id}`} aria-label="Edit template">
+                                <Edit className="h-4 w-4" />
+                              </Link>
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              title="Duplicate template"
+                              aria-label="Duplicate template"
+                              onClick={() => handleDuplicate(template.id)}
+                            >
+                              <Copy className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              title="Delete template"
+                              aria-label="Delete template"
+                              onClick={() => {
+                                setTemplateToDelete(template.id);
+                                setShowDeleteDialog(true);
+                              }}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </div>
+                      </Card>
+                    ))}
+                  </div>
+
+                  {/* Pagination */}
+                  {data && data.totalPages > 1 && (
+                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 px-6 py-4 border-t border-neutral-200">
+                      <p className="text-xs sm:text-sm text-neutral-600 text-center sm:text-left">
+                        Showing{' '}
+                        <span className="font-medium text-neutral-900">{(page - 1) * data.pageSize + 1}</span> to{' '}
+                        <span className="font-medium text-neutral-900">
+                          {Math.min(page * data.pageSize, data.total)}
+                        </span>{' '}
+                        of <span className="font-medium text-neutral-900">{data.total}</span> templates
+                      </p>
+                      <div className="flex items-center gap-2 justify-center sm:justify-end">
+                        <Button variant="outline" size="sm" onClick={() => setPage(p => p - 1)} disabled={page === 1}>
+                          Previous
+                        </Button>
+                        <span className="text-sm text-neutral-700">
+                          Page {page} of {data.totalPages}
+                        </span>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setPage(p => p + 1)}
+                          disabled={page === data.totalPages}
+                        >
+                          Next
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <Card>
+                  <CardContent className="p-0">
+                  {/* Desktop Table View - Hidden on mobile */}
+                  <div className="hidden md:block overflow-x-auto">
+                    <table className="w-full">
+                      <thead className="bg-neutral-50 border-b border-neutral-200">
+                        <tr>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-neutral-500 uppercase tracking-wider">
+                            Name
+                          </th>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-neutral-500 uppercase tracking-wider">
+                            Type
+                          </th>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-neutral-500 uppercase tracking-wider">
+                            Subject
+                          </th>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-neutral-500 uppercase tracking-wider">
+                            Updated
+                          </th>
+                          <th className="px-6 py-3 text-right text-xs font-medium text-neutral-500 uppercase tracking-wider">
+                            Actions
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody className="bg-white divide-y divide-neutral-200">
+                        {data?.data.map(template => (
+                          <tr key={template.id} className="hover:bg-neutral-50 transition-colors">
+                            <td className="px-6 py-4 whitespace-nowrap">
+                              <Link
+                                href={`/templates/${template.id}`}
+                                className="text-sm font-medium text-neutral-900 hover:text-neutral-700 focus-visible:outline-none focus-visible:underline"
+                              >
+                                {template.name}
+                              </Link>
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap">
+                              <Badge className="capitalize" variant="neutral">
+                                {template.type.toLowerCase()}
+                              </Badge>
+                            </td>
+                            <td className="px-6 py-4 max-w-xs">
+                              <p className="text-sm text-neutral-700 truncate" title={template.subject}>
+                                {template.subject}
+                              </p>
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm text-neutral-500">
+                              <div className="group relative inline-block cursor-help">
+                                {formatRelativeTime(template.updatedAt)}
+                                <div className="hidden group-hover:block absolute z-10 w-48 p-2 bg-neutral-900 text-white text-xs rounded shadow-md bottom-full left-1/2 transform -translate-x-1/2 mb-1 whitespace-nowrap">
+                                  {dayjs(template.updatedAt).format('DD MMMM YYYY, hh:mm')}
+                                </div>
+                              </div>
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                              <div className="flex items-center justify-end gap-2">
+                                <Button asChild variant="ghost" size="sm" title="Edit template">
+                                  <Link href={`/templates/${template.id}`} aria-label="Edit template">
+                                    <Edit className="h-4 w-4" />
+                                  </Link>
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  title="Duplicate template"
+                                  aria-label="Duplicate template"
+                                  onClick={() => handleDuplicate(template.id)}
+                                >
+                                  <Copy className="h-4 w-4" />
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  title="Delete template"
+                                  aria-label="Delete template"
+                                  onClick={() => {
+                                    setTemplateToDelete(template.id);
+                                    setShowDeleteDialog(true);
+                                  }}
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </Button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* Mobile Card View - Only visible on mobile */}
+                  <div className="md:hidden space-y-3 p-4">
+                    {data?.data.map(template => (
+                      <div
+                        key={template.id}
+                        className="border border-neutral-200 rounded-lg p-4 bg-white hover:bg-neutral-50 transition-colors"
+                      >
+                        <div className="flex items-start justify-between gap-3 mb-2">
+                          <Link
+                            href={`/templates/${template.id}`}
+                            className="text-sm font-semibold text-neutral-900 leading-snug flex-1 min-w-0 hover:text-neutral-700"
                           >
+                            {template.name}
+                          </Link>
+                          <Badge className="capitalize shrink-0 mt-0.5" variant="neutral">
                             {template.type.toLowerCase()}
                           </Badge>
                         </div>
-                        <p className="text-sm font-medium text-neutral-700 truncate">{template.subject}</p>
-                      </Link>
-                      <div className="px-6 py-3 border-t border-neutral-100 flex items-center justify-between">
-                        <div className="flex items-center gap-1.5 text-xs text-neutral-400">
-                          <Calendar className="h-3 w-3" />
+                        <p className="text-sm text-neutral-700 truncate mb-3">{template.subject}</p>
+                        <div className="flex items-center justify-between">
                           <div className="group relative inline-block cursor-help">
-                            <span>Updated {formatRelativeTime(template.updatedAt)}</span>
+                            <span className="text-xs text-neutral-500">
+                              Updated {formatRelativeTime(template.updatedAt)}
+                            </span>
                             <div className="hidden group-hover:block absolute z-10 w-48 p-2 bg-neutral-900 text-white text-xs rounded shadow-md bottom-full left-0 mb-1 whitespace-nowrap">
                               {dayjs(template.updatedAt).format('DD MMMM YYYY, hh:mm')}
                             </div>
                           </div>
-                        </div>
-                        <div className="flex items-center gap-1">
-                          <Button asChild variant="ghost" size="sm" title="Edit template">
-                            <Link href={`/templates/${template.id}`} aria-label="Edit template"><Edit className="h-4 w-4" /></Link>
-                          </Button>
-                          <Button variant="ghost" size="sm" title="Duplicate template" onClick={() => handleDuplicate(template.id)}>
-                            <Copy className="h-4 w-4" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            title="Delete template"
-                            onClick={() => {
-                              setTemplateToDelete(template.id);
-                              setShowDeleteDialog(true);
-                            }}
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
+                          <div className="flex items-center gap-1">
+                            <Button asChild variant="ghost" size="sm" title="Edit template">
+                              <Link href={`/templates/${template.id}`} aria-label="Edit template">
+                                <Edit className="h-4 w-4" />
+                              </Link>
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              title="Duplicate template"
+                              aria-label="Duplicate template"
+                              onClick={() => handleDuplicate(template.id)}
+                            >
+                              <Copy className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              title="Delete template"
+                              aria-label="Delete template"
+                              onClick={() => {
+                                setTemplateToDelete(template.id);
+                                setShowDeleteDialog(true);
+                              }}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
                         </div>
                       </div>
-                    </Card>
-                  ))}
-                </div>
-
-                {/* Pagination */}
-                {data && data.totalPages > 1 && (
-                  <div className="flex items-center justify-between mt-6">
-                    <p className="text-sm text-neutral-500">
-                      Showing {(page - 1) * data.pageSize + 1} to {Math.min(page * data.pageSize, data.total)} of{' '}
-                      {data.total} templates
-                    </p>
-                    <div className="flex items-center gap-2">
-                      <Button variant="outline" size="sm" onClick={() => setPage(p => p - 1)} disabled={page === 1}>
-                        Previous
-                      </Button>
-                      <span className="text-sm text-neutral-700">
-                        Page {page} of {data.totalPages}
-                      </span>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => setPage(p => p + 1)}
-                        disabled={page === data.totalPages}
-                      >
-                        Next
-                      </Button>
-                    </div>
+                    ))}
                   </div>
-                )}
-              </>
-            )}
-          </div>
+
+                  {/* Pagination */}
+                  {data && data.totalPages > 1 && (
+                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 px-6 py-4 border-t border-neutral-200">
+                      <p className="text-xs sm:text-sm text-neutral-600 text-center sm:text-left">
+                        Showing{' '}
+                        <span className="font-medium text-neutral-900">{(page - 1) * data.pageSize + 1}</span> to{' '}
+                        <span className="font-medium text-neutral-900">
+                          {Math.min(page * data.pageSize, data.total)}
+                        </span>{' '}
+                        of <span className="font-medium text-neutral-900">{data.total}</span> templates
+                      </p>
+                      <div className="flex items-center gap-2 justify-center sm:justify-end">
+                        <Button variant="outline" size="sm" onClick={() => setPage(p => p - 1)} disabled={page === 1}>
+                          Previous
+                        </Button>
+                        <span className="text-sm text-neutral-700">
+                          Page {page} of {data.totalPages}
+                        </span>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setPage(p => p + 1)}
+                          disabled={page === data.totalPages}
+                        >
+                          Next
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                  </CardContent>
+                </Card>
+              )}
         </div>
 
         <ConfirmDialog

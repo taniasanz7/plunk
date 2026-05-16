@@ -11,6 +11,7 @@ import type {
   WorkflowTransition,
   Template,
   Contact,
+  Layout,
   Prisma,
 } from '@plunk/db';
 
@@ -80,3 +81,12 @@ export type StepConfig = Prisma.JsonValue;
  * Generic key-value result from step execution
  */
 export type StepResult = Record<string, unknown>;
+
+/**
+ * Layout list row with a template-usage count.
+ * Used by the layouts list endpoint to render "Used by N templates" without
+ * a separate per-row request.
+ */
+export type LayoutWithUsage = Layout & {
+  _count: {templates: number};
+};

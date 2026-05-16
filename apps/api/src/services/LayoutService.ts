@@ -1,19 +1,21 @@
 import type {Layout, Prisma} from '@plunk/db';
-import type {PaginatedResponse} from '@plunk/types';
+import type {LayoutWithUsage, PaginatedResponse} from '@plunk/types';
 
 import {prisma} from '../database/prisma.js';
 import {HttpException} from '../exceptions/index.js';
 
 export class LayoutService {
   /**
-   * Get all layouts for a project with pagination.
+   * Get all layouts for a project with pagination. The list payload also
+   * includes a `_count.templates` reference count so the dashboard can show
+   * "Used by N templates" without needing a separate per-row request.
    */
   public static async list(
     projectId: string,
     page = 1,
     pageSize = 20,
     search?: string,
-  ): Promise<PaginatedResponse<Layout>> {
+  ): Promise<PaginatedResponse<LayoutWithUsage>> {
     const skip = (page - 1) * pageSize;
 
     const where: Prisma.LayoutWhereInput = {
@@ -32,6 +34,9 @@ export class LayoutService {
         take: pageSize,
         // Default layout floats to the top, then newest first.
         orderBy: [{isDefault: 'desc'}, {createdAt: 'desc'}],
+        include: {
+          _count: {select: {templates: true}},
+        },
       }),
       prisma.layout.count({where}),
     ]);
