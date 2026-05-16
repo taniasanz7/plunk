@@ -71,6 +71,36 @@ const STEP_TYPE_LABELS: Record<string, string> = {
   UPDATE_CONTACT: 'Update Contact',
 };
 
+// ISO 8601 weekday numbers: 1=Mon ... 7=Sun
+const DAY_SHORT_NAMES: Record<number, string> = {
+  1: 'Mon',
+  2: 'Tue',
+  3: 'Wed',
+  4: 'Thu',
+  5: 'Fri',
+  6: 'Sat',
+  7: 'Sun',
+};
+
+function formatDelayLabel(config: any): string {
+  if (config?.type === 'localTime') {
+    const hour = typeof config.hour === 'number' ? config.hour : 0;
+    const minute = typeof config.minute === 'number' ? config.minute : 0;
+    const hh = String(hour).padStart(2, '0');
+    const mm = String(minute).padStart(2, '0');
+    const days = Array.isArray(config.allowedDaysOfWeek) ? config.allowedDaysOfWeek : [];
+    const dayNames = days
+      .filter((d: unknown): d is number => typeof d === 'number' && d >= 1 && d <= 7)
+      .map((d: number) => DAY_SHORT_NAMES[d])
+      .filter(Boolean);
+    if (dayNames.length > 0) {
+      return `Until ${hh}:${mm} on ${dayNames.join(', ')}`;
+    }
+    return `Until ${hh}:${mm}`;
+  }
+  return `Wait ${config?.amount ?? ''} ${config?.unit ?? ''}`.trim();
+}
+
 const STEP_TYPE_ICONS = {
   TRIGGER: GitBranch,
   SEND_EMAIL: Mail,
@@ -357,13 +387,11 @@ function CustomNode({
             </a>
           </div>
         )}
-        {data.type === 'DELAY' && data.config?.amount && (
+        {data.type === 'DELAY' && data.config && (data.config.amount || data.config.type === 'localTime') && (
           <div className="mt-3 pt-3 border-t border-neutral-100">
             <div className="flex items-center gap-2 text-xs text-neutral-600">
               <Timer className="h-3 w-3" />
-              <span>
-                Wait {data.config.amount} {data.config.unit}
-              </span>
+              <span>{formatDelayLabel(data.config)}</span>
             </div>
           </div>
         )}

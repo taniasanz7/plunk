@@ -157,11 +157,39 @@ export default function WorkflowEditorPage() {
           }
           break;
 
-        case 'DELAY':
-          if (!config.amount || !config.unit) {
-            errors.push(`"${step.name}" step is missing delay configuration (amount or unit)`);
+        case 'DELAY': {
+          // DELAY supports two config shapes:
+          //   1. Relative: {amount, unit}
+          //   2. Local time: {type: 'localTime', hour, minute, allowedDaysOfWeek?}
+          const isLocalTime = config.type === 'localTime';
+          if (isLocalTime) {
+            const hourValid =
+              typeof config.hour === 'number' && config.hour >= 0 && config.hour <= 23;
+            const minuteValid =
+              typeof config.minute === 'number' && config.minute >= 0 && config.minute <= 59;
+            if (!hourValid || !minuteValid) {
+              errors.push(`"${step.name}" step is missing local-time configuration (hour and minute)`);
+            }
+            if (config.allowedDaysOfWeek !== undefined) {
+              const daysValid =
+                Array.isArray(config.allowedDaysOfWeek) &&
+                config.allowedDaysOfWeek.every(
+                  (d: unknown) => typeof d === 'number' && Number.isInteger(d) && d >= 1 && d <= 7,
+                );
+              if (!daysValid) {
+                errors.push(`"${step.name}" step has invalid days of week (must be ISO weekdays 1-7)`);
+              }
+            }
+          } else {
+            const amountValid = typeof config.amount === 'number' && config.amount > 0;
+            const unitValid =
+              config.unit === 'minutes' || config.unit === 'hours' || config.unit === 'days';
+            if (!amountValid || !unitValid) {
+              errors.push(`"${step.name}" step is missing delay configuration (amount or unit)`);
+            }
           }
           break;
+        }
 
         case 'CONDITION':
           if (config.mode === 'multi') {
@@ -752,6 +780,7 @@ interface SettingsDialogProps {
 }
 
 function SettingsDialog({workflow, open, onOpenChange, onSave}: SettingsDialogProps) {
+  const isManualTrigger = workflow.triggerType === 'MANUAL';
   const triggerConfig = workflow.triggerConfig as {eventName?: string} | null;
   const [name, setName] = useState(workflow.name);
   const [description, setDescription] = useState(workflow.description ?? '');
@@ -771,10 +800,13 @@ function SettingsDialog({workflow, open, onOpenChange, onSave}: SettingsDialogPr
     }
   }, [open, workflow]);
 
-  // Fetch available event names
-  const {data: eventNamesData} = useSWR<{eventNames: string[]}>(open ? '/events/names' : null, {
-    revalidateOnFocus: false,
-  });
+  // Fetch available event names (only relevant for EVENT-triggered workflows)
+  const {data: eventNamesData} = useSWR<{eventNames: string[]}>(
+    open && !isManualTrigger ? '/events/names' : null,
+    {
+      revalidateOnFocus: false,
+    },
+  );
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -785,7 +817,10 @@ function SettingsDialog({workflow, open, onOpenChange, onSave}: SettingsDialogPr
         name,
         description: description || undefined,
         allowReentry,
-        triggerConfig: eventName.trim() ? {eventName: eventName.trim()} : undefined,
+        // MANUAL workflows are invoked via ENROLL_IN_WORKFLOW and have no public
+        // event name to bind to, so don't send triggerConfig in that case.
+        triggerConfig:
+          !isManualTrigger && eventName.trim() ? {eventName: eventName.trim()} : undefined,
       });
     } finally {
       setIsSubmitting(false);
@@ -815,56 +850,73 @@ function SettingsDialog({workflow, open, onOpenChange, onSave}: SettingsDialogPr
             />
           </div>
 
-          <div>
-            <Label htmlFor="eventName">Trigger Event *</Label>
-            <div className="relative">
+          {isManualTrigger ? (
+            <div>
+              <Label htmlFor="eventName">Trigger</Label>
               <Input
                 id="eventName"
                 type="text"
-                value={eventName}
-                onChange={e => {
-                  setEventName(e.target.value);
-                  setEventPopoverOpen(true);
-                }}
-                onFocus={() => setEventPopoverOpen(true)}
-                onBlur={() => {
-                  setTimeout(() => setEventPopoverOpen(false), 150);
-                }}
-                placeholder="e.g., contact.created, email.opened"
-                required
-                autoComplete="off"
+                value="Manual / invoked via ENROLL_IN_WORKFLOW"
+                disabled
+                readOnly
               />
-              {eventPopoverOpen && ((eventNamesData?.eventNames?.length ?? 0) > 0 || eventName?.trim()) && (
-                <div className="absolute z-50 w-full mt-1 rounded-md border border-neutral-200 bg-white shadow-md">
-                  <Command>
-                    <CommandList>
-                      <CommandGroup>
-                        {eventNamesData?.eventNames
-                          ?.filter(n => !eventName || n.toLowerCase().includes(eventName.toLowerCase()))
-                          .map(n => (
-                            <CommandItem key={n} value={n} onSelect={() => { setEventName(n); setEventPopoverOpen(false); }}>
-                              {n}
-                            </CommandItem>
-                          ))}
-                        {eventName?.trim() && !eventNamesData?.eventNames?.some(n => n === eventName.trim()) && (
-                          <CommandItem
-                            key="__custom__"
-                            value={eventName.trim()}
-                            onSelect={() => { setEventName(eventName.trim()); setEventPopoverOpen(false); }}
-                          >
-                            Use &ldquo;{eventName.trim()}&rdquo;
-                          </CommandItem>
-                        )}
-                      </CommandGroup>
-                    </CommandList>
-                  </Command>
-                </div>
-              )}
+              <p className="text-xs text-neutral-500 mt-1">
+                This workflow has no public trigger event; it can only be started from another workflow&apos;s
+                Enroll in Workflow step.
+              </p>
             </div>
-            <p className="text-xs text-neutral-500 mt-1">
-              The event that triggers this workflow to start for a contact
-            </p>
-          </div>
+          ) : (
+            <div>
+              <Label htmlFor="eventName">Trigger Event *</Label>
+              <div className="relative">
+                <Input
+                  id="eventName"
+                  type="text"
+                  value={eventName}
+                  onChange={e => {
+                    setEventName(e.target.value);
+                    setEventPopoverOpen(true);
+                  }}
+                  onFocus={() => setEventPopoverOpen(true)}
+                  onBlur={() => {
+                    setTimeout(() => setEventPopoverOpen(false), 150);
+                  }}
+                  placeholder="e.g., contact.created, email.opened"
+                  required
+                  autoComplete="off"
+                />
+                {eventPopoverOpen && ((eventNamesData?.eventNames?.length ?? 0) > 0 || eventName?.trim()) && (
+                  <div className="absolute z-50 w-full mt-1 rounded-md border border-neutral-200 bg-white shadow-md">
+                    <Command>
+                      <CommandList>
+                        <CommandGroup>
+                          {eventNamesData?.eventNames
+                            ?.filter(n => !eventName || n.toLowerCase().includes(eventName.toLowerCase()))
+                            .map(n => (
+                              <CommandItem key={n} value={n} onSelect={() => { setEventName(n); setEventPopoverOpen(false); }}>
+                                {n}
+                              </CommandItem>
+                            ))}
+                          {eventName?.trim() && !eventNamesData?.eventNames?.some(n => n === eventName.trim()) && (
+                            <CommandItem
+                              key="__custom__"
+                              value={eventName.trim()}
+                              onSelect={() => { setEventName(eventName.trim()); setEventPopoverOpen(false); }}
+                            >
+                              Use &ldquo;{eventName.trim()}&rdquo;
+                            </CommandItem>
+                          )}
+                        </CommandGroup>
+                      </CommandList>
+                    </Command>
+                  </div>
+                )}
+              </div>
+              <p className="text-xs text-neutral-500 mt-1">
+                The event that triggers this workflow to start for a contact
+              </p>
+            </div>
+          )}
 
           <div className="flex items-start gap-3 p-4 bg-neutral-50 rounded-lg border border-neutral-200">
             <Switch id="allowReentry" checked={allowReentry} onCheckedChange={setAllowReentry} />
