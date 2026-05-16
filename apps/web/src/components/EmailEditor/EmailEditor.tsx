@@ -42,6 +42,10 @@ interface EmailEditorProps {
   subject?: string;
   from?: string;
   replyTo?: string;
+  // Optional layout (master template) body. When provided, the preview pane
+  // renders the template body wrapped inside this layout via the
+  // {{contentSlot}} placeholder — matching what recipients will actually see.
+  layoutBody?: string | null;
 }
 
 const commonVariables = [
@@ -52,7 +56,7 @@ const commonVariables = [
   {name: 'manageUrl', description: 'Manage link'},
 ];
 
-export function EmailEditor({value, onChange, placeholder, subject, from, replyTo}: EmailEditorProps) {
+export function EmailEditor({value, onChange, placeholder, subject, from, replyTo, layoutBody}: EmailEditorProps) {
   // Detect if initial value has custom HTML and start in appropriate mode
   const initialMode = detectCustomHtmlPatterns(value) ? 'html' : 'visual';
 
@@ -237,24 +241,52 @@ export function EmailEditor({value, onChange, placeholder, subject, from, replyT
     return renderTemplate(text, contactData);
   };
 
+  // Mirror packages/shared/src/template.ts `renderWithLayout` (sync
+  // renderTemplate variant): two-pass — render template body first, swap
+  // {{contentSlot}} in the layout for a unique marker, render the layout
+  // for its own variables, then splice the rendered template body into
+  // the marker position verbatim. Keeps editor preview byte-identical to
+  // the send-time pipeline.
+  const composeWithLayout = (
+    bodyHtml: string,
+    layout: string,
+    variables: Record<string, unknown> | null,
+  ): string => {
+    const renderedBody = variables ? replaceVariables(bodyHtml, variables) : bodyHtml;
+    const CONTENT_SLOT_TOKEN = ' __PLUNK_CONTENT_SLOT__ ';
+    const layoutWithMarker = layout.replace(/\{\{\s*contentSlot\s*\}\}/g, CONTENT_SLOT_TOKEN);
+    const renderedLayout = variables ? replaceVariables(layoutWithMarker, variables) : layoutWithMarker;
+    return renderedLayout.split(CONTENT_SLOT_TOKEN).join(renderedBody);
+  };
+
   const getPreviewHtml = () => {
     const currentHtml = mode === 'visual' ? editor?.getHTML() || '' : htmlContent;
-    if (!selectedContactId) return currentHtml;
 
-    const contact = contacts.find(c => c.id === selectedContactId);
-    if (!contact) return currentHtml;
+    // If the layout is malformed (no {{contentSlot}}), fall back to the
+    // body-only path so the preview still renders something sensible.
+    const hasLayout = !!layoutBody && /\{\{\s*contentSlot\s*\}\}/.test(layoutBody);
 
-    const contactData = {
-      email: contact.email,
-      unsubscribed: (contact as {subscribed?: boolean}).subscribed ? 'No' : 'Yes',
-      unsubscribeUrl: `${window.location.origin}/unsubscribe/${contact.id}`,
-      subscribeUrl: `${window.location.origin}/subscribe/${contact.id}`,
-      manageUrl: `${window.location.origin}/manage/${contact.id}`,
-      data: contact.data || {},
-      ...((contact.data as Record<string, unknown> | null) || {}),
-    };
+    let contactData: Record<string, unknown> | null = null;
+    if (selectedContactId) {
+      const contact = contacts.find(c => c.id === selectedContactId);
+      if (contact) {
+        contactData = {
+          email: contact.email,
+          unsubscribed: (contact as {subscribed?: boolean}).subscribed ? 'No' : 'Yes',
+          unsubscribeUrl: `${window.location.origin}/unsubscribe/${contact.id}`,
+          subscribeUrl: `${window.location.origin}/subscribe/${contact.id}`,
+          manageUrl: `${window.location.origin}/manage/${contact.id}`,
+          data: contact.data || {},
+          ...((contact.data as Record<string, unknown> | null) || {}),
+        };
+      }
+    }
 
-    return replaceVariables(currentHtml, contactData);
+    if (hasLayout && layoutBody) {
+      return composeWithLayout(currentHtml, layoutBody, contactData);
+    }
+
+    return contactData ? replaceVariables(currentHtml, contactData) : currentHtml;
   };
 
   const getPreviewSubject = () => {
@@ -300,7 +332,12 @@ export function EmailEditor({value, onChange, placeholder, subject, from, replyT
 
       if (iframeDoc) {
         const previewContent = getPreviewHtml();
-        const fullHtml = wrapEmailWithStyles(previewContent);
+        // When a layout is in effect, the layout body IS the wrapper — it
+        // supplies its own scaffold, <style> rules (e.g. img max-width),
+        // and footer. Re-wrapping in wrapEmailWithStyles would double up
+        // and override the layout's intent, so skip it.
+        const hasLayout = !!layoutBody && /\{\{\s*contentSlot\s*\}\}/.test(layoutBody);
+        const fullHtml = hasLayout ? previewContent : wrapEmailWithStyles(previewContent);
 
         iframeDoc.open();
         iframeDoc.write(fullHtml);
@@ -334,7 +371,7 @@ export function EmailEditor({value, onChange, placeholder, subject, from, replyT
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedContactId, htmlContent, mode, previewDevice, previewUpdateTrigger]);
+  }, [selectedContactId, htmlContent, mode, previewDevice, previewUpdateTrigger, layoutBody]);
 
   return (
     <div className="border border-neutral-200 rounded-lg bg-white">

@@ -192,6 +192,7 @@ export const TemplateSchemas = {
     fromName: z.string().max(100).nullish(),
     replyTo: email.nullish(),
     type: z.nativeEnum(TemplateType).default('MARKETING'),
+    layoutId: uuid.nullish(),
   }),
   update: z.object({
     name: z.string().min(1).max(100).optional(),
@@ -202,6 +203,20 @@ export const TemplateSchemas = {
     fromName: z.string().max(100).nullish(),
     replyTo: email.nullish(),
     type: z.nativeEnum(TemplateType).optional(),
+    layoutId: uuid.nullish(),
+  }),
+};
+
+export const LayoutSchemas = {
+  create: z.object({
+    name: z.string().min(1).max(100),
+    body: z.string().min(1),
+    isDefault: z.boolean().optional(),
+  }),
+  update: z.object({
+    name: z.string().min(1).max(100).optional(),
+    body: z.string().min(1).optional(),
+    isDefault: z.boolean().optional(),
   }),
 };
 

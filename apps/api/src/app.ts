@@ -30,6 +30,7 @@ import {Campaigns} from './controllers/Campaigns.js';
 import {Contacts} from './controllers/Contacts.js';
 import {Domains} from './controllers/Domains.js';
 import {Events} from './controllers/Events.js';
+import {Layouts} from './controllers/Layouts.js';
 import {Oauth} from './controllers/Oauth/index.js';
 import {Projects} from './controllers/Projects.js';
 import {Segments} from './controllers/Segments.js';
@@ -159,6 +160,7 @@ const server = new (class extends Server {
       new Projects(),
       new Segments(),
       new Templates(),
+      new Layouts(),
       new Uploads(),
       new Webhooks(),
       new Workflows(),

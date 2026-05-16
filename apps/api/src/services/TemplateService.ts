@@ -84,8 +84,13 @@ export class TemplateService {
       fromName?: string | null;
       replyTo?: string | null;
       type?: Template['type'];
+      layoutId?: string | null;
     },
   ): Promise<Template> {
+    if (data.layoutId) {
+      await this.assertLayoutBelongsToProject(projectId, data.layoutId);
+    }
+
     return prisma.template.create({
       data: {
         projectId,
@@ -97,8 +102,25 @@ export class TemplateService {
         fromName: data.fromName,
         replyTo: data.replyTo,
         type: data.type ?? 'MARKETING',
+        layoutId: data.layoutId ?? null,
       },
     });
+  }
+
+  /**
+   * Verify that a given layoutId exists and belongs to the same project as
+   * the template being created/updated. Prevents callers from referencing
+   * a layout from a different project.
+   */
+  private static async assertLayoutBelongsToProject(projectId: string, layoutId: string): Promise<void> {
+    const layout = await prisma.layout.findFirst({
+      where: {id: layoutId, projectId},
+      select: {id: true},
+    });
+
+    if (!layout) {
+      throw new HttpException(400, 'Layout not found or does not belong to this project');
+    }
   }
 
   /**
@@ -116,14 +138,20 @@ export class TemplateService {
       fromName?: string | null;
       replyTo?: string | null;
       type?: Template['type'];
+      layoutId?: string | null;
     },
   ): Promise<Template> {
     // Verify template exists and belongs to project
     await this.get(projectId, templateId);
 
+    if (data.layoutId) {
+      await this.assertLayoutBelongsToProject(projectId, data.layoutId);
+    }
+
     const updateData = {
       ...buildEmailFieldsUpdate(data),
       ...(data.type !== undefined ? {type: data.type} : {}),
+      ...(data.layoutId !== undefined ? {layoutId: data.layoutId} : {}),
     } as Prisma.TemplateUpdateInput;
 
     return prisma.template.update({
@@ -177,6 +205,7 @@ export class TemplateService {
         fromName: template.fromName,
         replyTo: template.replyTo,
         type: template.type,
+        layoutId: template.layoutId,
       },
     });
   }

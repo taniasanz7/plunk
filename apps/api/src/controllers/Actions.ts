@@ -8,6 +8,7 @@ import {DomainService} from '../services/DomainService.js';
 import {EmailService} from '../services/EmailService.js';
 import {EmailVerificationService} from '../services/EmailVerificationService.js';
 import {EventService} from '../services/EventService.js';
+import {LayoutService} from '../services/LayoutService.js';
 import {NotFound, ValidationError} from '../exceptions/index.js';
 import {CatchAsync} from '../utils/asyncHandler.js';
 import {DASHBOARD_URI} from '../app/constants.js';
@@ -238,6 +239,22 @@ export class Actions {
 
       emailReplyTo = reply || templateRecord.replyTo || undefined;
       templateId = templateRecord.id;
+
+      // Resolve the layout (master template wrapper) only when the caller is
+      // using the template's body — if they overrode `body` in the request,
+      // they're treating the template as a sender/subject preset and we
+      // shouldn't wrap their custom HTML. Explicit layoutId on the template
+      // wins; otherwise fall back to the project's default layout. If neither
+      // exists, send without a wrapper (the historical behavior).
+      if (!body) {
+        const layoutBody = await LayoutService.resolveLayoutBody(auth.projectId!, templateRecord.layoutId);
+        if (layoutBody) {
+          // Splice the template body into {{contentSlot}} verbatim. The
+          // subsequent per-recipient variable substitution loop renders both
+          // layout-level and template-level {{vars}} in a single pass.
+          emailBody = layoutBody.replace(/\{\{\s*contentSlot\s*\}\}/g, emailBody!);
+        }
+      }
     }
 
     if (!emailFrom) {

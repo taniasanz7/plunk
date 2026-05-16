@@ -9,7 +9,7 @@ import type {
 } from '@plunk/db';
 import {StepExecutionStatus, WorkflowExecutionStatus} from '@plunk/db';
 import {toPrismaJson} from '@plunk/types';
-import {renderTemplate, WorkflowStepConfigSchemas} from '@plunk/shared';
+import {renderTemplate, renderWithLayout, WorkflowStepConfigSchemas} from '@plunk/shared';
 import dns from 'node:dns/promises';
 import net from 'node:net';
 import signale from 'signale';
@@ -562,7 +562,15 @@ export class WorkflowExecutionService {
     };
 
     const renderedSubject = this.renderTemplate(step.template.subject, variables);
-    const renderedBody = this.renderTemplate(step.template.body, variables);
+
+    // Resolve the layout (master template wrapper) for this template. Explicit
+    // layoutId wins; otherwise fall back to the project's default layout.
+    // When no layout applies, renderWithLayout is a passthrough for renderTemplate.
+    const layoutBody = await this.resolveLayoutBody(
+      execution.workflow.projectId,
+      step.template.layoutId ?? null,
+    );
+    const renderedBody = renderWithLayout(step.template.body, layoutBody, variables);
 
     // Determine recipient email
     // Schema validation ensures customEmail exists when type is CUSTOM
@@ -1173,6 +1181,32 @@ export class WorkflowExecutionService {
    */
   private static renderTemplate(template: string, variables: Record<string, unknown>): string {
     return renderTemplate(template, variables);
+  }
+
+  /**
+   * Helper: Resolve the layout body to apply when rendering a template's
+   * email content. Explicit layoutId on the template wins; otherwise the
+   * project's default layout (if any) is used. Returns null when no layout
+   * should be applied — the caller's renderWithLayout will then act as a
+   * passthrough.
+   */
+  private static async resolveLayoutBody(
+    projectId: string,
+    layoutId: string | null,
+  ): Promise<string | null> {
+    if (layoutId) {
+      const layout = await prisma.layout.findFirst({
+        where: {id: layoutId, projectId},
+        select: {body: true},
+      });
+      return layout?.body ?? null;
+    }
+
+    const defaultLayout = await prisma.layout.findFirst({
+      where: {projectId, isDefault: true},
+      select: {body: true},
+    });
+    return defaultLayout?.body ?? null;
   }
 
   /**

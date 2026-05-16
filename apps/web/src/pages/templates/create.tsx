@@ -7,7 +7,14 @@ import {
   CardTitle,
   Input,
   Label,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
 } from '@plunk/ui';
+import type {Layout} from '@plunk/db';
+import type {PaginatedResponse} from '@plunk/types';
 import {NextSeo} from 'next-seo';
 import {DashboardLayout} from '../../components/DashboardLayout';
 import {EmailSettings} from '../../components/EmailSettings';
@@ -19,8 +26,11 @@ import Link from 'next/link';
 import {useRouter} from 'next/router';
 import {useState} from 'react';
 import {toast} from 'sonner';
+import useSWR from 'swr';
 import {TemplateSchemas, detectUnsubscribeSignal} from '@plunk/shared';
 import {useActiveProject} from '../../lib/contexts/ActiveProjectProvider';
+
+const LAYOUT_NONE = '__none__';
 
 export default function CreateTemplatePage() {
   const router = useRouter();
@@ -33,7 +43,24 @@ export default function CreateTemplatePage() {
   const [fromName, setFromName] = useState('');
   const [replyTo, setReplyTo] = useState('');
   const [type, setType] = useState<'MARKETING' | 'TRANSACTIONAL' | 'HEADLESS'>('MARKETING');
+  const [layoutId, setLayoutId] = useState<string>(LAYOUT_NONE);
   const [saving, setSaving] = useState(false);
+
+  // Fetch available layouts (small list — assume <100). Default layout floats first.
+  const {data: layoutsResponse} = useSWR<PaginatedResponse<Layout>>('/layouts?pageSize=100', {
+    revalidateOnFocus: false,
+  });
+  const layouts = layoutsResponse?.data ?? [];
+  const defaultLayout = layouts.find(l => l.isDefault) ?? null;
+
+  // The effective layout used at send time: explicit pick wins; otherwise the
+  // project default (if any); otherwise none. Used to render the preview pane.
+  const effectiveLayoutBody = (() => {
+    if (layoutId && layoutId !== LAYOUT_NONE) {
+      return layouts.find(l => l.id === layoutId)?.body ?? null;
+    }
+    return defaultLayout?.body ?? null;
+  })();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -56,6 +83,7 @@ export default function CreateTemplatePage() {
         fromName: fromName || null,
         replyTo: replyTo || null,
         type,
+        layoutId: layoutId === LAYOUT_NONE ? null : layoutId,
       });
 
       toast.success('Template created successfully');
@@ -145,7 +173,7 @@ export default function CreateTemplatePage() {
                       </button>
                     ))}
                   </div>
-                  {type === 'HEADLESS' && !detectUnsubscribeSignal(body) && (
+                  {type === 'HEADLESS' && !detectUnsubscribeSignal(body, effectiveLayoutBody) && (
                     <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 overflow-hidden">
                       <div className="flex items-center gap-2 border-b border-amber-200 bg-amber-100/60 px-3 py-2">
                         <TriangleAlert className="h-3.5 w-3.5 text-amber-600 shrink-0" />
@@ -202,6 +230,35 @@ export default function CreateTemplatePage() {
               </CardContent>
             </Card>
 
+            {/* Layout (master template) */}
+            <Card>
+              <CardHeader>
+                <CardTitle>Layout</CardTitle>
+                <CardDescription>
+                  Wrap this template&apos;s body inside a reusable master template. Select &quot;None / default&quot;
+                  to use the project default (if any), or pick a specific layout.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <Select value={layoutId} onValueChange={setLayoutId}>
+                  <SelectTrigger id="layout">
+                    <SelectValue placeholder="None / default" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={LAYOUT_NONE}>
+                      None / default{defaultLayout ? ` (${defaultLayout.name})` : ''}
+                    </SelectItem>
+                    {layouts.map(layout => (
+                      <SelectItem key={layout.id} value={layout.id}>
+                        {layout.name}
+                        {layout.isDefault ? ' (default)' : ''}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </CardContent>
+            </Card>
+
             {/* Email Body */}
             <Card className="overflow-visible">
               <CardHeader>
@@ -209,7 +266,7 @@ export default function CreateTemplatePage() {
                 <CardDescription>Create your email using the visual editor or paste custom HTML</CardDescription>
               </CardHeader>
               <CardContent>
-                <EmailEditor value={body} onChange={setBody} />
+                <EmailEditor value={body} onChange={setBody} layoutBody={effectiveLayoutBody} />
               </CardContent>
             </Card>
 

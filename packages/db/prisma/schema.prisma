@@ -65,6 +65,7 @@ model Project {
   members     Membership[]
   contacts    Contact[]
   templates   Template[]
+  layouts     Layout[]
   segments    Segment[]
   workflows   Workflow[]
   campaigns   Campaign[]
@@ -176,6 +177,11 @@ model Template {
   project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
   projectId String
 
+  // Optional layout (master template) that wraps this template's body via {{contentSlot}}.
+  // When null, the project's default layout (if any) is applied at render time.
+  layout   Layout? @relation(fields: [layoutId], references: [id], onDelete: SetNull)
+  layoutId String?
+
   emails        Email[]
   workflowSteps WorkflowStep[]
 
@@ -185,7 +191,38 @@ model Template {
 
   @@index([projectId])
   @@index([projectId, type])
+  @@index([layoutId])
   @@map("templates")
+}
+
+// ============================================
+// LAYOUTS (Master templates / wrappers)
+// ============================================
+
+model Layout {
+  id String @id @default(uuid())
+
+  // Details
+  name String
+  body String // HTML scaffold containing a {{contentSlot}} placeholder
+
+  // Default layout for templates with no explicit layoutId.
+  // At most one Layout per project may have isDefault = true (enforced in service layer).
+  isDefault Boolean @default(false)
+
+  // Relations
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId String
+
+  templates Template[]
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([projectId])
+  @@index([projectId, isDefault])
+  @@map("layouts")
 }
 
 // ============================================
