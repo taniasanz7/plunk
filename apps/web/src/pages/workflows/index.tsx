@@ -16,6 +16,11 @@ import {
   IconSpinner,
   Input,
   Label,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
 } from '@plunk/ui';
 import type {Workflow} from '@plunk/db';
 import type {PaginatedResponse} from '@plunk/types';
@@ -32,17 +37,33 @@ import useSWR from 'swr';
 import {WorkflowSchemas} from '@plunk/shared';
 import dayjs from 'dayjs';
 
+type SortField = 'createdAt' | 'updatedAt' | 'name';
+type SortDirection = 'asc' | 'desc';
+type SortOption = `${SortField}:${SortDirection}`;
+
+const SORT_OPTIONS: ReadonlyArray<{value: SortOption; label: string}> = [
+  {value: 'createdAt:desc', label: 'Newest first'},
+  {value: 'createdAt:asc', label: 'Oldest first'},
+  {value: 'updatedAt:desc', label: 'Recently updated'},
+  {value: 'updatedAt:asc', label: 'Least recently updated'},
+  {value: 'name:asc', label: 'Name (A–Z)'},
+  {value: 'name:desc', label: 'Name (Z–A)'},
+];
+
 export default function WorkflowsPage() {
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
   const [searchInput, setSearchInput] = useState('');
+  const [sortOption, setSortOption] = useState<SortOption>('createdAt:desc');
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [workflowToDelete, setWorkflowToDelete] = useState<string | null>(null);
 
+  const [sortField, sortDir] = sortOption.split(':') as [SortField, SortDirection];
+
   const {data, mutate, isLoading} = useSWR<
     PaginatedResponse<Workflow & {_count?: {steps: number; executions: number}}>
-  >(`/workflows?page=${page}&pageSize=20${search ? `&search=${search}` : ''}`, {revalidateOnFocus: false});
+  >(`/workflows?page=${page}&pageSize=20&sort=${sortField}&dir=${sortDir}${search ? `&search=${search}` : ''}`, {revalidateOnFocus: false});
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -109,30 +130,52 @@ export default function WorkflowsPage() {
             </Button>
           </div>
 
-          {/* Search */}
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-neutral-400" />
-            <Input
-              type="text"
-              placeholder="Search workflows..."
-              value={searchInput}
-              onChange={e => setSearchInput(e.target.value)}
-              className="pl-10 pr-10"
-            />
-            {searchInput && (
-              <button
-                type="button"
-                aria-label="Clear search"
-                onClick={() => {
-                  setSearchInput('');
-                  setSearch('');
+          {/* Search & Sort */}
+          <div className="flex flex-col sm:flex-row gap-3">
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-neutral-400" />
+              <Input
+                type="text"
+                placeholder="Search workflows..."
+                value={searchInput}
+                onChange={e => setSearchInput(e.target.value)}
+                className="pl-10 pr-10"
+              />
+              {searchInput && (
+                <button
+                  type="button"
+                  aria-label="Clear search"
+                  onClick={() => {
+                    setSearchInput('');
+                    setSearch('');
+                    setPage(1);
+                  }}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-neutral-600 transition-colors"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              )}
+            </div>
+            <div className="shrink-0 sm:w-52">
+              <Select
+                value={sortOption}
+                onValueChange={(value: string) => {
+                  setSortOption(value as SortOption);
                   setPage(1);
                 }}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-neutral-600 transition-colors"
               >
-                <X className="h-4 w-4" />
-              </button>
-            )}
+                <SelectTrigger aria-label="Sort workflows" className="h-8 w-full text-xs">
+                  <SelectValue placeholder="Sort by" />
+                </SelectTrigger>
+                <SelectContent>
+                  {SORT_OPTIONS.map(opt => (
+                    <SelectItem key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
 
           {/* Workflows */}

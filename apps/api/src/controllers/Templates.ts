@@ -5,12 +5,20 @@ import {requireAuth, requireEmailVerified} from '../middleware/auth.js';
 import {DomainService} from '../services/DomainService.js';
 import {TemplateService} from '../services/TemplateService.js';
 import {CatchAsync} from '../utils/asyncHandler.js';
+import {parseListSort} from '../utils/listSort.js';
 
 @Controller('templates')
 export class Templates {
   /**
    * GET /templates
    * List all templates for the authenticated project
+   *
+   * Query params:
+   * - page, pageSize: pagination
+   * - search: filter by name/description/subject
+   * - type: filter by TemplateType
+   * - sort: name | createdAt | updatedAt (default: createdAt)
+   * - dir: asc | desc (default: desc)
    */
   @Get('')
   @Middleware([requireAuth, requireEmailVerified])
@@ -21,8 +29,9 @@ export class Templates {
     const pageSize = Math.min(parseInt(req.query.pageSize as string) || 20, 100);
     const search = req.query.search as string | undefined;
     const type = req.query.type as TemplateType | undefined;
+    const sort = parseListSort(req.query.sort, req.query.dir, {field: 'createdAt', direction: 'desc'});
 
-    const result = await TemplateService.list(auth.projectId!, page, pageSize, search, type);
+    const result = await TemplateService.list(auth.projectId!, page, pageSize, search, type, sort);
 
     return res.status(200).json(result);
   }

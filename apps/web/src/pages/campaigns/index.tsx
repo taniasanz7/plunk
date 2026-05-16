@@ -9,6 +9,11 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
   Input,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
 } from '@plunk/ui';
 import type {Campaign, Template} from '@plunk/db';
 import {CampaignStatus} from '@plunk/db';
@@ -28,12 +33,26 @@ import {toast} from 'sonner';
 import useSWR from 'swr';
 import dayjs from 'dayjs';
 
+type SortField = 'createdAt' | 'updatedAt' | 'name';
+type SortDirection = 'asc' | 'desc';
+type SortOption = `${SortField}:${SortDirection}`;
+
+const SORT_OPTIONS: ReadonlyArray<{value: SortOption; label: string}> = [
+  {value: 'createdAt:desc', label: 'Newest first'},
+  {value: 'createdAt:asc', label: 'Oldest first'},
+  {value: 'updatedAt:desc', label: 'Recently updated'},
+  {value: 'updatedAt:asc', label: 'Least recently updated'},
+  {value: 'name:asc', label: 'Name (A–Z)'},
+  {value: 'name:desc', label: 'Name (Z–A)'},
+];
+
 export default function CampaignsPage() {
   const router = useRouter();
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
   const [searchInput, setSearchInput] = useState('');
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'DRAFT' | 'SCHEDULED' | 'SENDING' | 'SENT' | 'CANCELLED'>('ALL');
+  const [sortOption, setSortOption] = useState<SortOption>('createdAt:desc');
   const [showCancelDialog, setShowCancelDialog] = useState(false);
   const [campaignToCancel, setCampaignToCancel] = useState<string | null>(null);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
@@ -41,8 +60,10 @@ export default function CampaignsPage() {
   const [showTemplateDialog, setShowTemplateDialog] = useState(false);
   const [showCampaignDialog, setShowCampaignDialog] = useState(false);
 
+  const [sortField, sortDir] = sortOption.split(':') as [SortField, SortDirection];
+
   const {data, mutate, isLoading} = useSWR<PaginatedResponse<Campaign>>(
-    `/campaigns?page=${page}&pageSize=20${search ? `&search=${encodeURIComponent(search)}` : ''}${statusFilter !== 'ALL' ? `&status=${statusFilter}` : ''}`,
+    `/campaigns?page=${page}&pageSize=20&sort=${sortField}&dir=${sortDir}${search ? `&search=${encodeURIComponent(search)}` : ''}${statusFilter !== 'ALL' ? `&status=${statusFilter}` : ''}`,
     {revalidateOnFocus: false},
   );
 
@@ -289,6 +310,26 @@ export default function CampaignsPage() {
                   {status === 'ALL' ? 'All' : status.charAt(0) + status.slice(1).toLowerCase()}
                 </Button>
               ))}
+            </div>
+            <div className="shrink-0 sm:w-52">
+              <Select
+                value={sortOption}
+                onValueChange={(value: string) => {
+                  setSortOption(value as SortOption);
+                  setPage(1);
+                }}
+              >
+                <SelectTrigger aria-label="Sort campaigns" className="h-8 w-full text-xs">
+                  <SelectValue placeholder="Sort by" />
+                </SelectTrigger>
+                <SelectContent>
+                  {SORT_OPTIONS.map(opt => (
+                    <SelectItem key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
           </div>
 

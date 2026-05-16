@@ -4,6 +4,7 @@ import type {PaginatedResponse} from '@plunk/types';
 
 import {prisma} from '../database/prisma.js';
 import {HttpException} from '../exceptions/index.js';
+import type {ListSort} from '../utils/listSort.js';
 import {buildEmailFieldsUpdate} from '../utils/modelUpdate.js';
 
 export class TemplateService {
@@ -16,6 +17,7 @@ export class TemplateService {
     pageSize = 20,
     search?: string,
     type?: Template['type'],
+    sort: ListSort = {field: 'createdAt', direction: 'desc'},
   ): Promise<PaginatedResponse<Template>> {
     const skip = (page - 1) * pageSize;
 
@@ -38,7 +40,7 @@ export class TemplateService {
         where,
         skip,
         take: pageSize,
-        orderBy: {createdAt: 'desc'},
+        orderBy: {[sort.field]: sort.direction} as Prisma.TemplateOrderByWithRelationInput,
       }),
       prisma.template.count({where}),
     ]);
