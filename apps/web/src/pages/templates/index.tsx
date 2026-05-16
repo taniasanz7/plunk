@@ -10,19 +10,40 @@ import {
 import type {Template} from '@plunk/db';
 import type {PaginatedResponse} from '@plunk/types';
 import {EmptyState} from '@plunk/ui';
+import {
+  flexRender,
+  getCoreRowModel,
+  useReactTable,
+  type ColumnDef,
+  type RowSelectionState,
+  type SortingState,
+  type VisibilityState,
+} from '@tanstack/react-table';
 import {DashboardLayout} from '../../components/DashboardLayout';
+import {ColumnVisibilityMenu} from '../../components/ColumnVisibilityMenu';
+import {SortableHeader} from '../../components/SortableHeader';
 import {network} from '../../lib/network';
 import {formatRelativeTime} from '../../lib/dateUtils';
+import {useColumnVisibility} from '../../lib/hooks/useColumnVisibility';
 import {Calendar, Copy, Edit, FileText, LayoutGrid, List, Plus, Search, Trash2, X} from 'lucide-react';
 import {NextSeo} from 'next-seo';
 import Link from 'next/link';
-import {useEffect, useState} from 'react';
+import {useEffect, useMemo, useState} from 'react';
 import {toast} from 'sonner';
 import useSWR from 'swr';
 import dayjs from 'dayjs';
 
 type ViewMode = 'card' | 'table';
 const VIEW_STORAGE_KEY = 'plunk:templates:view';
+const COLUMNS_STORAGE_KEY = 'plunk:templates:columns';
+
+const DEFAULT_COLUMN_VISIBILITY: VisibilityState = {
+  name: true,
+  type: true,
+  subject: true,
+  updatedAt: true,
+  actions: true,
+};
 
 export default function TemplatesPage() {
   const [page, setPage] = useState(1);
@@ -32,6 +53,16 @@ export default function TemplatesPage() {
   const [view, setView] = useState<ViewMode>('card');
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [templateToDelete, setTemplateToDelete] = useState<string | null>(null);
+
+  // Tanstack table state.
+  const [sorting, setSorting] = useState<SortingState>([]);
+  const [columnVisibility, setColumnVisibility] = useColumnVisibility(
+    COLUMNS_STORAGE_KEY,
+    DEFAULT_COLUMN_VISIBILITY,
+  );
+  // Row-selection primitive plumbed through for patch #25 (bulk-action UI lives there).
+  // Intentionally not surfaced in the UI here — only the state is wired up.
+  const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
 
   // Restore the view preference from localStorage on first mount (client only).
   useEffect(() => {
@@ -47,8 +78,13 @@ export default function TemplatesPage() {
     }
   };
 
+  // Build sort query string from tanstack state. The backend (fork patch #9 / selfhost)
+  // accepts `?sort=<field>&dir=asc|desc`. Without those params it falls back to default order.
+  const sortParam = sorting[0]?.id ?? '';
+  const dirParam = sorting[0] ? (sorting[0].desc ? 'desc' : 'asc') : '';
+
   const {data, mutate, isLoading} = useSWR<PaginatedResponse<Template>>(
-    `/templates?page=${page}&pageSize=20${search ? `&search=${search}` : ''}${typeFilter !== 'ALL' ? `&type=${typeFilter}` : ''}`,
+    `/templates?page=${page}&pageSize=20${search ? `&search=${search}` : ''}${typeFilter !== 'ALL' ? `&type=${typeFilter}` : ''}${sortParam ? `&sort=${sortParam}&dir=${dirParam}` : ''}`,
     {revalidateOnFocus: false},
   );
 
@@ -83,6 +119,117 @@ export default function TemplatesPage() {
       toast.error(error instanceof Error ? error.message : 'Failed to duplicate template');
     }
   };
+
+  const columns = useMemo<Array<ColumnDef<Template>>>(
+    () => [
+      {
+        id: 'name',
+        accessorKey: 'name',
+        enableHiding: false, // Name column is locked-visible.
+        meta: {label: 'Name'},
+        header: ({column}) => <SortableHeader column={column}>Name</SortableHeader>,
+        cell: ({row}) => (
+          <Link
+            href={`/templates/${row.original.id}`}
+            className="text-sm font-medium text-neutral-900 hover:text-neutral-700 focus-visible:outline-none focus-visible:underline"
+          >
+            {row.original.name}
+          </Link>
+        ),
+      },
+      {
+        id: 'type',
+        accessorKey: 'type',
+        meta: {label: 'Type'},
+        header: ({column}) => <SortableHeader column={column}>Type</SortableHeader>,
+        cell: ({row}) => (
+          <Badge className="capitalize" variant="neutral">
+            {row.original.type.toLowerCase()}
+          </Badge>
+        ),
+      },
+      {
+        id: 'subject',
+        accessorKey: 'subject',
+        meta: {label: 'Subject'},
+        header: ({column}) => <SortableHeader column={column}>Subject</SortableHeader>,
+        cell: ({row}) => (
+          <p className="text-sm text-neutral-700 truncate" title={row.original.subject}>
+            {row.original.subject}
+          </p>
+        ),
+      },
+      {
+        id: 'updatedAt',
+        accessorKey: 'updatedAt',
+        meta: {label: 'Updated'},
+        header: ({column}) => <SortableHeader column={column}>Updated</SortableHeader>,
+        cell: ({row}) => (
+          <div className="group relative inline-block cursor-help text-sm text-neutral-500">
+            {formatRelativeTime(row.original.updatedAt)}
+            <div className="hidden group-hover:block absolute z-10 w-48 p-2 bg-neutral-900 text-white text-xs rounded shadow-md bottom-full left-1/2 transform -translate-x-1/2 mb-1 whitespace-nowrap">
+              {dayjs(row.original.updatedAt).format('DD MMMM YYYY, hh:mm')}
+            </div>
+          </div>
+        ),
+      },
+      {
+        id: 'actions',
+        enableSorting: false,
+        enableHiding: false,
+        meta: {label: 'Actions'},
+        header: () => <span className="flex justify-end">Actions</span>,
+        cell: ({row}) => (
+          <div className="flex items-center justify-end gap-2">
+            <Button asChild variant="ghost" size="sm" title="Edit template">
+              <Link href={`/templates/${row.original.id}`} aria-label="Edit template">
+                <Edit className="h-4 w-4" />
+              </Link>
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              title="Duplicate template"
+              aria-label="Duplicate template"
+              onClick={() => handleDuplicate(row.original.id)}
+            >
+              <Copy className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              title="Delete template"
+              aria-label="Delete template"
+              onClick={() => {
+                setTemplateToDelete(row.original.id);
+                setShowDeleteDialog(true);
+              }}
+            >
+              <Trash2 className="h-4 w-4" />
+            </Button>
+          </div>
+        ),
+      },
+    ],
+    // handleDuplicate is stable enough for this list — re-creating columns on every render
+    // is cheap and avoids stale-closure bugs for the delete handler.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+
+  const table = useReactTable<Template>({
+    data: data?.data ?? [],
+    columns,
+    state: {sorting, columnVisibility, rowSelection},
+    onSortingChange: setSorting,
+    onColumnVisibilityChange: setColumnVisibility,
+    onRowSelectionChange: setRowSelection,
+    enableRowSelection: true,
+    enableMultiSort: false,
+    manualSorting: true, // Backend handles sorting; client just exposes ?sort=&dir=.
+    getCoreRowModel: getCoreRowModel(),
+    getRowId: row => row.id,
+  });
 
   return (
     <>
@@ -146,6 +293,11 @@ export default function TemplatesPage() {
                 </Button>
               ))}
             </div>
+            {view === 'table' && (
+              <div className="shrink-0">
+                <ColumnVisibilityMenu table={table} lockedColumnIds={['name', 'actions']} />
+              </div>
+            )}
             <div className="flex gap-0.5 shrink-0 rounded-md border border-neutral-200 p-px">
               <Button
                 type="button"
@@ -304,87 +456,58 @@ export default function TemplatesPage() {
               ) : (
                 <Card>
                   <CardContent className="p-0">
-                  {/* Desktop Table View - Hidden on mobile */}
+                  {/* Desktop Table View (tanstack-driven) - Hidden on mobile */}
                   <div className="hidden md:block overflow-x-auto">
                     <table className="w-full">
                       <thead className="bg-neutral-50 border-b border-neutral-200">
-                        <tr>
-                          <th className="px-6 py-3 text-left text-xs font-medium text-neutral-500 uppercase tracking-wider">
-                            Name
-                          </th>
-                          <th className="px-6 py-3 text-left text-xs font-medium text-neutral-500 uppercase tracking-wider">
-                            Type
-                          </th>
-                          <th className="px-6 py-3 text-left text-xs font-medium text-neutral-500 uppercase tracking-wider">
-                            Subject
-                          </th>
-                          <th className="px-6 py-3 text-left text-xs font-medium text-neutral-500 uppercase tracking-wider">
-                            Updated
-                          </th>
-                          <th className="px-6 py-3 text-right text-xs font-medium text-neutral-500 uppercase tracking-wider">
-                            Actions
-                          </th>
-                        </tr>
+                        {table.getHeaderGroups().map(headerGroup => (
+                          <tr key={headerGroup.id}>
+                            {headerGroup.headers.map(header => {
+                              const isActions = header.column.id === 'actions';
+                              const sorted = header.column.getIsSorted();
+                              return (
+                                <th
+                                  key={header.id}
+                                  aria-sort={
+                                    sorted === 'asc'
+                                      ? 'ascending'
+                                      : sorted === 'desc'
+                                        ? 'descending'
+                                        : header.column.getCanSort()
+                                          ? 'none'
+                                          : undefined
+                                  }
+                                  className={
+                                    'px-6 py-3 text-xs font-medium text-neutral-500 uppercase tracking-wider ' +
+                                    (isActions ? 'text-right' : 'text-left')
+                                  }
+                                >
+                                  {header.isPlaceholder
+                                    ? null
+                                    : flexRender(header.column.columnDef.header, header.getContext())}
+                                </th>
+                              );
+                            })}
+                          </tr>
+                        ))}
                       </thead>
                       <tbody className="bg-white divide-y divide-neutral-200">
-                        {data?.data.map(template => (
-                          <tr key={template.id} className="hover:bg-neutral-50 transition-colors">
-                            <td className="px-6 py-4 whitespace-nowrap">
-                              <Link
-                                href={`/templates/${template.id}`}
-                                className="text-sm font-medium text-neutral-900 hover:text-neutral-700 focus-visible:outline-none focus-visible:underline"
-                              >
-                                {template.name}
-                              </Link>
-                            </td>
-                            <td className="px-6 py-4 whitespace-nowrap">
-                              <Badge className="capitalize" variant="neutral">
-                                {template.type.toLowerCase()}
-                              </Badge>
-                            </td>
-                            <td className="px-6 py-4 max-w-xs">
-                              <p className="text-sm text-neutral-700 truncate" title={template.subject}>
-                                {template.subject}
-                              </p>
-                            </td>
-                            <td className="px-6 py-4 whitespace-nowrap text-sm text-neutral-500">
-                              <div className="group relative inline-block cursor-help">
-                                {formatRelativeTime(template.updatedAt)}
-                                <div className="hidden group-hover:block absolute z-10 w-48 p-2 bg-neutral-900 text-white text-xs rounded shadow-md bottom-full left-1/2 transform -translate-x-1/2 mb-1 whitespace-nowrap">
-                                  {dayjs(template.updatedAt).format('DD MMMM YYYY, hh:mm')}
-                                </div>
-                              </div>
-                            </td>
-                            <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                              <div className="flex items-center justify-end gap-2">
-                                <Button asChild variant="ghost" size="sm" title="Edit template">
-                                  <Link href={`/templates/${template.id}`} aria-label="Edit template">
-                                    <Edit className="h-4 w-4" />
-                                  </Link>
-                                </Button>
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  title="Duplicate template"
-                                  aria-label="Duplicate template"
-                                  onClick={() => handleDuplicate(template.id)}
-                                >
-                                  <Copy className="h-4 w-4" />
-                                </Button>
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  title="Delete template"
-                                  aria-label="Delete template"
-                                  onClick={() => {
-                                    setTemplateToDelete(template.id);
-                                    setShowDeleteDialog(true);
-                                  }}
-                                >
-                                  <Trash2 className="h-4 w-4" />
-                                </Button>
-                              </div>
-                            </td>
+                        {table.getRowModel().rows.map(row => (
+                          <tr key={row.id} className="hover:bg-neutral-50 transition-colors">
+                            {row.getVisibleCells().map(cell => {
+                              const id = cell.column.id;
+                              const cellClass =
+                                id === 'subject'
+                                  ? 'px-6 py-4 max-w-xs'
+                                  : id === 'actions'
+                                    ? 'px-6 py-4 whitespace-nowrap text-right text-sm font-medium'
+                                    : 'px-6 py-4 whitespace-nowrap';
+                              return (
+                                <td key={cell.id} className={cellClass}>
+                                  {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                                </td>
+                              );
+                            })}
                           </tr>
                         ))}
                       </tbody>
