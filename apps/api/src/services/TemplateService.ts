@@ -5,6 +5,7 @@ import type {PaginatedResponse} from '@plunk/types';
 import {prisma} from '../database/prisma.js';
 import {HttpException} from '../exceptions/index.js';
 import {buildEmailFieldsUpdate} from '../utils/modelUpdate.js';
+import {normalizeTags} from '../utils/tags.js';
 
 export class TemplateService {
   /**
@@ -16,12 +17,14 @@ export class TemplateService {
     pageSize = 20,
     search?: string,
     type?: Template['type'],
+    tag?: string,
   ): Promise<PaginatedResponse<Template>> {
     const skip = (page - 1) * pageSize;
 
     const where: Prisma.TemplateWhereInput = {
       projectId,
       ...(type ? {type} : {}),
+      ...(tag ? {tags: {has: tag}} : {}),
       ...(search
         ? {
             OR: [
@@ -84,6 +87,7 @@ export class TemplateService {
       fromName?: string | null;
       replyTo?: string | null;
       type?: Template['type'];
+      tags?: string[];
     },
   ): Promise<Template> {
     return prisma.template.create({
@@ -97,6 +101,7 @@ export class TemplateService {
         fromName: data.fromName,
         replyTo: data.replyTo,
         type: data.type ?? 'MARKETING',
+        tags: normalizeTags(data.tags) ?? [],
       },
     });
   }
@@ -116,20 +121,44 @@ export class TemplateService {
       fromName?: string | null;
       replyTo?: string | null;
       type?: Template['type'];
+      tags?: string[];
     },
   ): Promise<Template> {
     // Verify template exists and belongs to project
     await this.get(projectId, templateId);
 
+    const normalizedTags = normalizeTags(data.tags);
+
     const updateData = {
       ...buildEmailFieldsUpdate(data),
       ...(data.type !== undefined ? {type: data.type} : {}),
+      ...(normalizedTags !== undefined ? {tags: {set: normalizedTags}} : {}),
     } as Prisma.TemplateUpdateInput;
 
     return prisma.template.update({
       where: {id: templateId},
       data: updateData,
     });
+  }
+
+  /**
+   * List distinct tags currently in use across the project's templates.
+   * Returned sorted alphabetically.
+   */
+  public static async listTags(projectId: string): Promise<string[]> {
+    const rows = await prisma.template.findMany({
+      where: {projectId},
+      select: {tags: true},
+    });
+
+    const set = new Set<string>();
+    for (const row of rows) {
+      for (const t of row.tags) {
+        set.add(t);
+      }
+    }
+
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
   }
 
   /**
@@ -177,6 +206,7 @@ export class TemplateService {
         fromName: template.fromName,
         replyTo: template.replyTo,
         type: template.type,
+        tags: template.tags,
       },
     });
   }

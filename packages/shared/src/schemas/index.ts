@@ -182,6 +182,10 @@ export const SegmentSchemas = {
   }),
 };
 
+// Free-form organizational tag (case-sensitive, trimmed by the client; matched exactly on filter).
+const tag = z.string().min(1).max(50);
+const tagsArray = z.array(tag).max(50);
+
 export const TemplateSchemas = {
   create: z.object({
     name: z.string().min(1).max(100),
@@ -192,6 +196,7 @@ export const TemplateSchemas = {
     fromName: z.string().max(100).nullish(),
     replyTo: email.nullish(),
     type: z.nativeEnum(TemplateType).default('MARKETING'),
+    tags: tagsArray.optional(),
   }),
   update: z.object({
     name: z.string().min(1).max(100).optional(),
@@ -202,6 +207,7 @@ export const TemplateSchemas = {
     fromName: z.string().max(100).nullish(),
     replyTo: email.nullish(),
     type: z.nativeEnum(TemplateType).optional(),
+    tags: tagsArray.optional(),
   }),
 };
 
@@ -212,6 +218,7 @@ export const WorkflowSchemas = {
     eventName: z.string().min(1),
     allowReentry: z.boolean().optional(),
     enabled: z.boolean().default(false),
+    tags: tagsArray.optional(),
   }),
   update: z.object({
     name: z.string().min(1).max(100).optional(),
@@ -220,6 +227,7 @@ export const WorkflowSchemas = {
     triggerConfig: jsonSchema.optional(),
     enabled: z.boolean().optional(),
     allowReentry: z.boolean().optional(),
+    tags: tagsArray.optional(),
   }),
   addStep: z.object({
     type: z.nativeEnum(WorkflowStepType),

@@ -6,6 +6,7 @@ import signale from 'signale';
 
 import {prisma} from '../database/prisma.js';
 import {HttpException} from '../exceptions/index.js';
+import {normalizeTags} from '../utils/tags.js';
 
 import {ContactService} from './ContactService.js';
 import {EventService} from './EventService.js';
@@ -21,11 +22,13 @@ export class WorkflowService {
     page = 1,
     pageSize = 20,
     search?: string,
+    tag?: string,
   ): Promise<PaginatedResponse<Workflow>> {
     const skip = (page - 1) * pageSize;
 
     const where: Prisma.WorkflowWhereInput = {
       projectId,
+      ...(tag ? {tags: {has: tag}} : {}),
       ...(search
         ? {
             OR: [
@@ -61,6 +64,26 @@ export class WorkflowService {
       pageSize,
       totalPages: Math.ceil(total / pageSize),
     };
+  }
+
+  /**
+   * List distinct tags currently in use across the project's workflows.
+   * Returned sorted alphabetically.
+   */
+  public static async listTags(projectId: string): Promise<string[]> {
+    const rows = await prisma.workflow.findMany({
+      where: {projectId},
+      select: {tags: true},
+    });
+
+    const set = new Set<string>();
+    for (const row of rows) {
+      for (const t of row.tags) {
+        set.add(t);
+      }
+    }
+
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
   }
 
   /**
@@ -107,6 +130,7 @@ export class WorkflowService {
       eventName: string;
       enabled?: boolean;
       allowReentry?: boolean;
+      tags?: string[];
     },
   ): Promise<Workflow> {
     if (!data.eventName?.trim()) {
@@ -123,6 +147,7 @@ export class WorkflowService {
           triggerConfig: {eventName: data.eventName.trim()},
           enabled: data.enabled ?? false,
           allowReentry: data.allowReentry ?? false,
+          tags: normalizeTags(data.tags) ?? [],
         },
       });
 
@@ -170,6 +195,7 @@ export class WorkflowService {
       triggerConfig?: Prisma.JsonValue;
       enabled?: boolean;
       allowReentry?: boolean;
+      tags?: string[];
     },
   ): Promise<Workflow> {
     // Verify workflow exists and belongs to project
@@ -206,6 +232,10 @@ export class WorkflowService {
       }
       if (data.enabled !== undefined) updateData.enabled = data.enabled;
       if (data.allowReentry !== undefined) updateData.allowReentry = data.allowReentry;
+      if (data.tags !== undefined) {
+        const normalized = normalizeTags(data.tags);
+        if (normalized !== undefined) updateData.tags = {set: normalized};
+      }
 
       const updatedWorkflow = await tx.workflow.update({
         where: {id: workflowId},
@@ -335,6 +365,7 @@ export class WorkflowService {
               : (source.triggerConfig as Prisma.InputJsonValue),
           enabled: false,
           allowReentry: source.allowReentry,
+          tags: source.tags,
         },
       });
 

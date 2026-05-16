@@ -11,6 +11,7 @@ import type {Template} from '@plunk/db';
 import type {PaginatedResponse} from '@plunk/types';
 import {EmptyState} from '@plunk/ui';
 import {DashboardLayout} from '../../components/DashboardLayout';
+import {TagFilterBar} from '../../components/TagFilterBar';
 import {network} from '../../lib/network';
 import {formatRelativeTime} from '../../lib/dateUtils';
 import {Calendar, Copy, Edit, FileText, Plus, Search, Trash2, X} from 'lucide-react';
@@ -26,13 +27,16 @@ export default function TemplatesPage() {
   const [search, setSearch] = useState('');
   const [searchInput, setSearchInput] = useState('');
   const [typeFilter, setTypeFilter] = useState<'ALL' | 'TRANSACTIONAL' | 'MARKETING' | 'HEADLESS'>('ALL');
+  const [tagFilter, setTagFilter] = useState<string | null>(null);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [templateToDelete, setTemplateToDelete] = useState<string | null>(null);
 
   const {data, mutate, isLoading} = useSWR<PaginatedResponse<Template>>(
-    `/templates?page=${page}&pageSize=20${search ? `&search=${search}` : ''}${typeFilter !== 'ALL' ? `&type=${typeFilter}` : ''}`,
+    `/templates?page=${page}&pageSize=20${search ? `&search=${search}` : ''}${typeFilter !== 'ALL' ? `&type=${typeFilter}` : ''}${tagFilter ? `&tag=${encodeURIComponent(tagFilter)}` : ''}`,
     {revalidateOnFocus: false},
   );
+
+  const {data: tagsData} = useSWR<{tags: string[]}>('/templates/tags', {revalidateOnFocus: false});
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -130,6 +134,18 @@ export default function TemplatesPage() {
             </div>
           </div>
 
+          {/* Tag Filter */}
+          {tagsData?.tags && tagsData.tags.length > 0 && (
+            <TagFilterBar
+              tags={tagsData.tags}
+              selected={tagFilter}
+              onChange={tag => {
+                setTagFilter(tag);
+                setPage(1);
+              }}
+            />
+          )}
+
           {/* Templates */}
           <div>
             {isLoading ? (
@@ -181,6 +197,18 @@ export default function TemplatesPage() {
                           </Badge>
                         </div>
                         <p className="text-sm font-medium text-neutral-700 truncate">{template.subject}</p>
+                        {template.tags && template.tags.length > 0 && (
+                          <div className="flex flex-wrap gap-1 mt-2">
+                            {template.tags.map(tag => (
+                              <span
+                                key={tag}
+                                className="inline-flex items-center rounded-full bg-neutral-100 px-2 py-0.5 text-[11px] font-medium text-neutral-600"
+                              >
+                                {tag}
+                              </span>
+                            ))}
+                          </div>
+                        )}
                       </Link>
                       <div className="px-6 py-3 border-t border-neutral-100 flex items-center justify-between">
                         <div className="flex items-center gap-1.5 text-xs text-neutral-400">

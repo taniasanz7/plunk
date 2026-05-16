@@ -20,10 +20,27 @@ export class Workflows {
     const page = parseInt(req.query.page as string) || 1;
     const pageSize = Math.min(parseInt(req.query.pageSize as string) || 20, 100);
     const search = req.query.search as string | undefined;
+    const tag = req.query.tag as string | undefined;
 
-    const result = await WorkflowService.list(auth.projectId!, page, pageSize, search);
+    const result = await WorkflowService.list(auth.projectId!, page, pageSize, search, tag);
 
     return res.status(200).json(result);
+  }
+
+  /**
+   * GET /workflows/tags
+   * List all distinct tags used by workflows in the authenticated project.
+   * Defined BEFORE the :id route to avoid conflicts.
+   */
+  @Get('tags')
+  @Middleware([requireAuth, requireEmailVerified])
+  @CatchAsync
+  public async listTags(_req: Request, res: Response, _next: NextFunction) {
+    const auth = res.locals.auth;
+
+    const tags = await WorkflowService.listTags(auth.projectId!);
+
+    return res.status(200).json({tags});
   }
 
   /**
@@ -80,7 +97,7 @@ export class Workflows {
   @CatchAsync
   public async create(req: Request, res: Response, _next: NextFunction) {
     const auth = res.locals.auth;
-    const {name, description, eventName, enabled, allowReentry} = req.body;
+    const {name, description, eventName, enabled, allowReentry, tags} = req.body;
 
     if (!name) {
       return res.status(400).json({error: 'Name is required'});
@@ -96,6 +113,7 @@ export class Workflows {
       eventName,
       enabled,
       allowReentry,
+      tags,
     });
 
     return res.status(201).json(workflow);
@@ -111,7 +129,7 @@ export class Workflows {
   public async update(req: Request, res: Response, _next: NextFunction) {
     const auth = res.locals.auth;
     const workflowId = req.params.id;
-    const {name, description, triggerType, triggerConfig, enabled, allowReentry} = req.body;
+    const {name, description, triggerType, triggerConfig, enabled, allowReentry, tags} = req.body;
 
     if (!workflowId) {
       return res.status(400).json({error: 'Workflow ID is required'});
@@ -124,6 +142,7 @@ export class Workflows {
       triggerConfig,
       enabled,
       allowReentry,
+      tags,
     });
 
     return res.status(200).json(workflow);

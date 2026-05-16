@@ -21,6 +21,8 @@ import type {Workflow} from '@plunk/db';
 import type {PaginatedResponse} from '@plunk/types';
 import {EmptyState} from '@plunk/ui';
 import {DashboardLayout} from '../../components/DashboardLayout';
+import {TagFilterBar} from '../../components/TagFilterBar';
+import {TagInput} from '../../components/TagInput';
 import {network} from '../../lib/network';
 import {formatRelativeTime} from '../../lib/dateUtils';
 import {Calendar, Copy, Edit, Plus, Power, PowerOff, Search, Trash2, Workflow as WorkflowIcon, X, Zap} from 'lucide-react';
@@ -36,13 +38,19 @@ export default function WorkflowsPage() {
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
   const [searchInput, setSearchInput] = useState('');
+  const [tagFilter, setTagFilter] = useState<string | null>(null);
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [workflowToDelete, setWorkflowToDelete] = useState<string | null>(null);
 
   const {data, mutate, isLoading} = useSWR<
     PaginatedResponse<Workflow & {_count?: {steps: number; executions: number}}>
-  >(`/workflows?page=${page}&pageSize=20${search ? `&search=${search}` : ''}`, {revalidateOnFocus: false});
+  >(
+    `/workflows?page=${page}&pageSize=20${search ? `&search=${search}` : ''}${tagFilter ? `&tag=${encodeURIComponent(tagFilter)}` : ''}`,
+    {revalidateOnFocus: false},
+  );
+
+  const {data: tagsData} = useSWR<{tags: string[]}>('/workflows/tags', {revalidateOnFocus: false});
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -135,6 +143,18 @@ export default function WorkflowsPage() {
             )}
           </div>
 
+          {/* Tag Filter */}
+          {tagsData?.tags && tagsData.tags.length > 0 && (
+            <TagFilterBar
+              tags={tagsData.tags}
+              selected={tagFilter}
+              onChange={tag => {
+                setTagFilter(tag);
+                setPage(1);
+              }}
+            />
+          )}
+
           {/* Workflows */}
           <div>
             {isLoading ? (
@@ -206,6 +226,18 @@ export default function WorkflowsPage() {
                             <span className="text-neutral-400 ml-1 text-xs">executions</span>
                           </span>
                         </div>
+                        {workflow.tags && workflow.tags.length > 0 && (
+                          <div className="flex flex-wrap gap-1 mt-2">
+                            {workflow.tags.map(tag => (
+                              <span
+                                key={tag}
+                                className="inline-flex items-center rounded-full bg-neutral-100 px-2 py-0.5 text-[11px] font-medium text-neutral-600"
+                              >
+                                {tag}
+                              </span>
+                            ))}
+                          </div>
+                        )}
                       </Link>
                       <div className="px-6 py-3 border-t border-neutral-100 flex items-center justify-between">
                         <div className="flex items-center gap-1.5 text-xs text-neutral-400">
@@ -313,6 +345,7 @@ function CreateWorkflowDialog({open, onOpenChange, onSuccess}: CreateWorkflowDia
   const [eventName, setEventName] = useState('');
   const [eventPopoverOpen, setEventPopoverOpen] = useState(false);
   const [allowReentry, setAllowReentry] = useState(false);
+  const [tags, setTags] = useState<string[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Fetch available event names
@@ -331,6 +364,7 @@ function CreateWorkflowDialog({open, onOpenChange, onSuccess}: CreateWorkflowDia
         eventName: eventName.trim(),
         allowReentry,
         enabled: false,
+        tags: tags.length > 0 ? tags : undefined,
       });
 
       toast.success('Workflow created successfully');
@@ -338,6 +372,7 @@ function CreateWorkflowDialog({open, onOpenChange, onSuccess}: CreateWorkflowDia
       setDescription('');
       setEventName('');
       setAllowReentry(false);
+      setTags([]);
       onOpenChange(false);
       onSuccess();
 
@@ -379,6 +414,11 @@ function CreateWorkflowDialog({open, onOpenChange, onSuccess}: CreateWorkflowDia
               className="w-full px-3 py-2 border border-neutral-200 rounded-md text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
               rows={3}
             />
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="createWorkflowTags">Tags</Label>
+            <TagInput id="createWorkflowTags" value={tags} onChange={setTags} placeholder="Press Enter to add" />
           </div>
 
           <div className="space-y-1.5">

@@ -12,6 +12,7 @@ import {NextSeo} from 'next-seo';
 import {DashboardLayout} from '../../components/DashboardLayout';
 import {EmailSettings} from '../../components/EmailSettings';
 import {EmailEditor} from '../../components/EmailEditor';
+import {TagInput} from '../../components/TagInput';
 import {network} from '../../lib/network';
 import {EmailFormValidator} from '../../lib/validation';
 import {ArrowLeft, TriangleAlert} from 'lucide-react';
@@ -33,6 +34,7 @@ export default function CreateTemplatePage() {
   const [fromName, setFromName] = useState('');
   const [replyTo, setReplyTo] = useState('');
   const [type, setType] = useState<'MARKETING' | 'TRANSACTIONAL' | 'HEADLESS'>('MARKETING');
+  const [tags, setTags] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -56,6 +58,7 @@ export default function CreateTemplatePage() {
         fromName: fromName || null,
         replyTo: replyTo || null,
         type,
+        tags: tags.length > 0 ? tags : undefined,
       });
 
       toast.success('Template created successfully');
@@ -114,6 +117,17 @@ export default function CreateTemplatePage() {
                       onChange={e => setDescription(e.target.value)}
                       placeholder="Sent to new subscribers"
                     />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="tags">Tags</Label>
+                    <TagInput
+                      id="tags"
+                      value={tags}
+                      onChange={setTags}
+                      placeholder="Press Enter to add"
+                    />
+                    <p className="text-xs text-neutral-500">Use tags to organize and filter templates on the list view.</p>
                   </div>
                 </CardContent>
               </Card>
