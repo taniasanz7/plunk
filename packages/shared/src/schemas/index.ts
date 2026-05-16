@@ -205,6 +205,16 @@ export const TemplateSchemas = {
     type: z.nativeEnum(TemplateType).optional(),
     layoutId: uuid.nullish(),
   }),
+  // Bulk update payload for the /templates/bulk-update endpoint.
+  // Currently supports `delete: true` for bulk-delete. Future tag-related
+  // fields (`addTags?: string[]`, `removeTags?: string[]`) plug in here
+  // once Template.tags exists on the schema (delivered by the separate
+  // template-tags patch). Keep this schema as the single source of truth
+  // for what bulk operations the endpoint accepts.
+  bulkUpdate: z.object({
+    ids: z.array(uuid).min(1).max(1000),
+    delete: z.boolean().optional(),
+  }),
 };
 
 export const LayoutSchemas = {

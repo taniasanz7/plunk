@@ -3,11 +3,13 @@ import {
   Button,
   Card,
   CardContent,
+  Checkbox,
   ConfirmDialog,
   IconSpinner,
   Input,
 } from '@plunk/ui';
 import type {Template} from '@plunk/db';
+import {TemplateSchemas} from '@plunk/shared';
 import type {PaginatedResponse} from '@plunk/types';
 import {EmptyState} from '@plunk/ui';
 import {
@@ -19,6 +21,7 @@ import {
   type SortingState,
   type VisibilityState,
 } from '@tanstack/react-table';
+import {BulkActionBar} from '../../components/BulkActionBar';
 import {DashboardLayout} from '../../components/DashboardLayout';
 import {ColumnVisibilityMenu} from '../../components/ColumnVisibilityMenu';
 import {SortableHeader} from '../../components/SortableHeader';
@@ -38,6 +41,7 @@ const VIEW_STORAGE_KEY = 'plunk:templates:view';
 const COLUMNS_STORAGE_KEY = 'plunk:templates:columns';
 
 const DEFAULT_COLUMN_VISIBILITY: VisibilityState = {
+  select: true,
   name: true,
   type: true,
   subject: true,
@@ -53,6 +57,8 @@ export default function TemplatesPage() {
   const [view, setView] = useState<ViewMode>('card');
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [templateToDelete, setTemplateToDelete] = useState<string | null>(null);
+  const [showBulkDeleteDialog, setShowBulkDeleteDialog] = useState(false);
+  const [bulkDeleteStatus, setBulkDeleteStatus] = useState<'idle' | 'loading'>('idle');
 
   // Tanstack table state.
   const [sorting, setSorting] = useState<SortingState>([]);
@@ -60,8 +66,9 @@ export default function TemplatesPage() {
     COLUMNS_STORAGE_KEY,
     DEFAULT_COLUMN_VISIBILITY,
   );
-  // Row-selection primitive plumbed through for patch #25 (bulk-action UI lives there).
-  // Intentionally not surfaced in the UI here — only the state is wired up.
+  // Row-selection state. Drives the BulkActionBar above the table. The
+  // selfhost follow-up (which composes with the template-tags patch) will
+  // wire the same selection to "Add tags…" / "Remove tags…" affordances.
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
 
   // Restore the view preference from localStorage on first mount (client only).
@@ -96,6 +103,14 @@ export default function TemplatesPage() {
     return () => clearTimeout(timer);
   }, [searchInput]);
 
+  // Reset row selection whenever the visible data set changes (page,
+  // search, filter). Selections only make sense for currently-visible
+  // rows — keeping a stale selection across pagination would let the
+  // user bulk-delete templates they can no longer see.
+  useEffect(() => {
+    setRowSelection({});
+  }, [page, search, typeFilter]);
+
   const handleDelete = async () => {
     if (!templateToDelete) return;
 
@@ -120,8 +135,70 @@ export default function TemplatesPage() {
     }
   };
 
+  const selectedIds = useMemo(
+    () => Object.keys(rowSelection).filter(id => rowSelection[id]),
+    [rowSelection],
+  );
+
+  const handleBulkDelete = async () => {
+    if (selectedIds.length === 0) return;
+    setBulkDeleteStatus('loading');
+    try {
+      const result = await network.fetch<{deleted?: number}, typeof TemplateSchemas.bulkUpdate>(
+        'POST',
+        '/templates/bulk-update',
+        {
+          ids: selectedIds,
+          delete: true,
+        },
+      );
+      toast.success(
+        `${result?.deleted ?? selectedIds.length} template${
+          (result?.deleted ?? selectedIds.length) === 1 ? '' : 's'
+        } deleted`,
+      );
+      setRowSelection({});
+      void mutate();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to delete templates');
+    } finally {
+      setBulkDeleteStatus('idle');
+    }
+  };
+
   const columns = useMemo<Array<ColumnDef<Template>>>(
     () => [
+      {
+        id: 'select',
+        enableSorting: false,
+        enableHiding: false, // Selection column is locked-visible.
+        meta: {label: 'Select'},
+        header: ({table}) => (
+          <Checkbox
+            aria-label="Select all rows on this page"
+            // `getIsSomePageRowsSelected` covers the indeterminate case.
+            // Radix's Checkbox accepts the boolean | 'indeterminate' shape directly.
+            checked={
+              table.getIsAllPageRowsSelected()
+                ? true
+                : table.getIsSomePageRowsSelected()
+                  ? 'indeterminate'
+                  : false
+            }
+            onCheckedChange={value => table.toggleAllPageRowsSelected(!!value)}
+          />
+        ),
+        cell: ({row}) => (
+          <Checkbox
+            aria-label={`Select ${row.original.name}`}
+            checked={row.getIsSelected()}
+            onCheckedChange={value => row.toggleSelected(!!value)}
+            // Prevent the row-level click handlers (if any get added later)
+            // from racing with the checkbox toggle.
+            onClick={e => e.stopPropagation()}
+          />
+        ),
+      },
       {
         id: 'name',
         accessorKey: 'name',
@@ -295,7 +372,7 @@ export default function TemplatesPage() {
             </div>
             {view === 'table' && (
               <div className="shrink-0">
-                <ColumnVisibilityMenu table={table} lockedColumnIds={['name', 'actions']} />
+                <ColumnVisibilityMenu table={table} lockedColumnIds={['select', 'name', 'actions']} />
               </div>
             )}
             <div className="flex gap-0.5 shrink-0 rounded-md border border-neutral-200 p-px">
@@ -325,6 +402,36 @@ export default function TemplatesPage() {
               </Button>
             </div>
           </div>
+
+          {/* Bulk action bar — only meaningful in table view where the
+              selection column exists. Patch #25 wires the delete action;
+              the selfhost follow-up (composing with the template-tags
+              patch) adds Add/Remove tags affordances via the children slot. */}
+          {view === 'table' && selectedIds.length > 0 && (
+            <BulkActionBar
+              selectedCount={selectedIds.length}
+              itemNoun="template"
+              onClear={() => setRowSelection({})}
+            >
+              <Button
+                type="button"
+                variant="destructive"
+                size="sm"
+                onClick={() => setShowBulkDeleteDialog(true)}
+                disabled={bulkDeleteStatus === 'loading'}
+              >
+                <Trash2 className="h-4 w-4" />
+                Delete selected
+              </Button>
+              {/*
+                TODO(selfhost-follow-up): "Add tags…" / "Remove tags…"
+                popovers go here once Template.tags lands upstream. They
+                will hit POST /templates/bulk-update with addTags /
+                removeTags arrays — the endpoint already accepts an
+                extensible payload (see TemplateSchemas.bulkUpdate).
+              */}
+            </BulkActionBar>
+          )}
 
           {/* Templates */}
           {isLoading ? (
@@ -464,6 +571,7 @@ export default function TemplatesPage() {
                           <tr key={headerGroup.id}>
                             {headerGroup.headers.map(header => {
                               const isActions = header.column.id === 'actions';
+                              const isSelect = header.column.id === 'select';
                               const sorted = header.column.getIsSorted();
                               return (
                                 <th
@@ -478,7 +586,10 @@ export default function TemplatesPage() {
                                           : undefined
                                   }
                                   className={
-                                    'px-6 py-3 text-xs font-medium text-neutral-500 uppercase tracking-wider ' +
+                                    (isSelect
+                                      ? 'pl-6 pr-2 py-3 w-10 '
+                                      : 'px-6 py-3 ') +
+                                    'text-xs font-medium text-neutral-500 uppercase tracking-wider ' +
                                     (isActions ? 'text-right' : 'text-left')
                                   }
                                 >
@@ -493,15 +604,24 @@ export default function TemplatesPage() {
                       </thead>
                       <tbody className="bg-white divide-y divide-neutral-200">
                         {table.getRowModel().rows.map(row => (
-                          <tr key={row.id} className="hover:bg-neutral-50 transition-colors">
+                          <tr
+                            key={row.id}
+                            className={
+                              'transition-colors ' +
+                              (row.getIsSelected() ? 'bg-neutral-50' : 'hover:bg-neutral-50')
+                            }
+                            data-state={row.getIsSelected() ? 'selected' : undefined}
+                          >
                             {row.getVisibleCells().map(cell => {
                               const id = cell.column.id;
                               const cellClass =
-                                id === 'subject'
-                                  ? 'px-6 py-4 max-w-xs'
-                                  : id === 'actions'
-                                    ? 'px-6 py-4 whitespace-nowrap text-right text-sm font-medium'
-                                    : 'px-6 py-4 whitespace-nowrap';
+                                id === 'select'
+                                  ? 'pl-6 pr-2 py-4 w-10'
+                                  : id === 'subject'
+                                    ? 'px-6 py-4 max-w-xs'
+                                    : id === 'actions'
+                                      ? 'px-6 py-4 whitespace-nowrap text-right text-sm font-medium'
+                                      : 'px-6 py-4 whitespace-nowrap';
                               return (
                                 <td key={cell.id} className={cellClass}>
                                   {flexRender(cell.column.columnDef.cell, cell.getContext())}
@@ -617,6 +737,19 @@ export default function TemplatesPage() {
           description="Are you sure you want to delete this template? This action cannot be undone."
           confirmText="Delete"
           variant="destructive"
+        />
+
+        <ConfirmDialog
+          open={showBulkDeleteDialog}
+          onOpenChange={setShowBulkDeleteDialog}
+          onConfirm={handleBulkDelete}
+          title={`Delete ${selectedIds.length} template${selectedIds.length === 1 ? '' : 's'}?`}
+          description={`Are you sure you want to delete ${selectedIds.length} template${
+            selectedIds.length === 1 ? '' : 's'
+          }? This action cannot be undone. Templates currently used in workflow steps will block the operation.`}
+          confirmText="Delete"
+          variant="destructive"
+          status={bulkDeleteStatus}
         />
       </DashboardLayout>
     </>

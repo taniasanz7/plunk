@@ -1,5 +1,6 @@
 import {Controller, Delete, Get, Middleware, Patch, Post} from '@overnightjs/core';
 import {TemplateType} from '@plunk/db';
+import {TemplateSchemas} from '@plunk/shared';
 import type {NextFunction, Request, Response} from 'express';
 import {requireAuth, requireEmailVerified} from '../middleware/auth.js';
 import {DomainService} from '../services/DomainService.js';
@@ -146,6 +147,37 @@ export class Templates {
     await TemplateService.delete(auth.projectId!, templateId);
 
     return res.status(204).send();
+  }
+
+  /**
+   * POST /templates/bulk-update
+   * Apply a bulk operation to multiple templates at once.
+   *
+   * Currently supports `{ids: string[], delete: true}` for bulk delete.
+   * The schema is intentionally open-ended so tag-related fields
+   * (addTags / removeTags) can stack on the same endpoint once the
+   * Template.tags column exists upstream.
+   *
+   * Atomicity: the underlying service wraps ownership + workflow-step
+   * checks + the delete in a single Prisma transaction, so a partial
+   * bulk delete is not possible.
+   */
+  @Post('bulk-update')
+  @Middleware([requireAuth, requireEmailVerified])
+  @CatchAsync
+  public async bulkUpdate(req: Request, res: Response, _next: NextFunction) {
+    const auth = res.locals.auth;
+
+    const parsed = TemplateSchemas.bulkUpdate.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({
+        error: parsed.error.errors[0]?.message ?? 'Invalid bulk update payload',
+      });
+    }
+
+    const result = await TemplateService.bulkUpdate(auth.projectId!, parsed.data);
+
+    return res.status(200).json(result);
   }
 
   /**
