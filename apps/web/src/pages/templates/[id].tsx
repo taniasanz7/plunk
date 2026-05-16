@@ -47,6 +47,7 @@ export default function TemplateEditorPage() {
         name: template.name,
         description: template.description || '',
         subject: template.subject,
+        previewText: template.previewText || '',
         body: template.body,
         from: template.from,
         fromName: template.fromName || '',
@@ -62,6 +63,7 @@ export default function TemplateEditorPage() {
       editedTemplate.name !== template.name ||
       (editedTemplate.description || '') !== (template.description || '') ||
       editedTemplate.subject !== template.subject ||
+      (editedTemplate.previewText || '') !== (template.previewText || '') ||
       editedTemplate.body !== template.body ||
       editedTemplate.from !== template.from ||
       (editedTemplate.fromName || '') !== (template.fromName || '') ||
@@ -82,6 +84,7 @@ export default function TemplateEditorPage() {
         name: editedTemplate.name,
         description: editedTemplate.description || undefined,
         subject: editedTemplate.subject,
+        previewText: editedTemplate.previewText || null,
         body: editedTemplate.body,
         from: editedTemplate.from,
         fromName: editedTemplate.fromName || null,
@@ -243,6 +246,27 @@ export default function TemplateEditorPage() {
                   placeholder="Welcome to our platform!"
                 />
                 <p className="text-xs text-neutral-500">Use {'{{variableName}}'} for dynamic content</p>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="previewText">Preview Text</Label>
+                <Input
+                  id="previewText"
+                  type="text"
+                  value={editedTemplate.previewText || ''}
+                  onChange={e => setEditedTemplate({...editedTemplate, previewText: e.target.value})}
+                  placeholder="Optional preview text shown in inbox after subject"
+                  maxLength={200}
+                />
+                <p
+                  className={`text-xs ${
+                    (editedTemplate.previewText?.length ?? 0) > 100 ? 'text-amber-600' : 'text-neutral-500'
+                  }`}
+                >
+                  {(editedTemplate.previewText?.length ?? 0) > 100
+                    ? `${editedTemplate.previewText?.length}/200 characters — most inboxes truncate after ~100`
+                    : 'Shown next to the subject in the inbox preview. Supports {{variableName}}.'}
+                </p>
               </div>
 
               <EmailSettings

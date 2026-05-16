@@ -185,7 +185,7 @@ export class Actions {
     const auth = res.locals.auth;
 
     // Zod validation - errors automatically handled by global error handler
-    const {to, subject, body, subscribed, name, from, reply, headers, data, template, attachments} =
+    const {to, subject, previewText, body, subscribed, name, from, reply, headers, data, template, attachments} =
       ActionSchemas.send.parse(req.body);
 
     // Normalize recipients to array and parse email/name
@@ -217,6 +217,7 @@ export class Actions {
 
     // Fetch template if provided
     let emailSubject = subject;
+    let emailPreviewText: string | undefined = previewText;
     let emailBody = body;
     let emailReplyTo = reply;
     let templateId: string | undefined;
@@ -236,6 +237,8 @@ export class Actions {
       // Use template values, allow overrides from request
       emailSubject = subject || templateRecord.subject;
       emailBody = body || templateRecord.body;
+      // Preview text: request override wins; otherwise fall back to template.previewText
+      emailPreviewText = previewText ?? templateRecord.previewText ?? undefined;
 
       // Handle from field - if not already set and template has a from, use it
       if (!emailFrom && templateRecord.from) {
@@ -301,6 +304,7 @@ export class Actions {
       // Simple template variable replacement: {{fieldname}}
       let renderedSubject = emailSubject!;
       let renderedBody = emailBody!;
+      let renderedPreviewText: string | undefined = emailPreviewText;
 
       for (const [key, value] of Object.entries(dataWithSystemVars)) {
         const placeholder = new RegExp(`\\{\\{\\s*${key}\\s*\\}\\}`, 'g');
@@ -310,24 +314,37 @@ export class Actions {
         const stringValue = value !== null && value !== undefined ? String(value) : '';
         renderedSubject = renderedSubject!.replace(placeholder, stringValue);
         renderedBody = renderedBody!.replace(placeholder, stringValue);
+        if (renderedPreviewText) {
+          renderedPreviewText = renderedPreviewText.replace(placeholder, stringValue);
+        }
 
         // Handle fallback syntax: {{field ?? default}}
         renderedSubject = renderedSubject!.replace(fallbackPlaceholder, stringValue || '$1');
         renderedBody = renderedBody!.replace(fallbackPlaceholder, stringValue || '$1');
+        if (renderedPreviewText) {
+          renderedPreviewText = renderedPreviewText.replace(fallbackPlaceholder, stringValue || '$1');
+        }
       }
 
       // Replace any remaining placeholders with empty string or fallback value
       renderedSubject = renderedSubject!.replace(/\{\{\s*(\w+)\s*\}\}/g, '');
       renderedBody = renderedBody!.replace(/\{\{\s*(\w+)\s*\}\}/g, '');
+      if (renderedPreviewText) {
+        renderedPreviewText = renderedPreviewText.replace(/\{\{\s*(\w+)\s*\}\}/g, '');
+      }
 
       // Handle fallback placeholders that weren't matched
       renderedSubject = renderedSubject!.replace(/\{\{\s*\w+\s*\?\?\s*([^}]+)\}\}/g, '$1');
       renderedBody = renderedBody!.replace(/\{\{\s*\w+\s*\?\?\s*([^}]+)\}\}/g, '$1');
+      if (renderedPreviewText) {
+        renderedPreviewText = renderedPreviewText.replace(/\{\{\s*\w+\s*\?\?\s*([^}]+)\}\}/g, '$1');
+      }
 
       const email = await EmailService.sendTransactionalEmail({
         projectId: auth.projectId,
         contactId: contact.id,
         subject: renderedSubject,
+        previewText: renderedPreviewText || null,
         body: renderedBody,
         from: emailFrom,
         fromName: emailFromName,

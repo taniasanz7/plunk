@@ -1,6 +1,7 @@
 import {beforeEach, describe, expect, it, vi} from 'vitest';
 import {CampaignAudienceType, CampaignStatus} from '@plunk/db';
 import {CampaignService} from '../CampaignService';
+import {sendRawEmail} from '../SESService';
 import {factories, getPrismaClient} from '../../../../../test/helpers';
 
 // Mock STRIPE_ENABLED for billing limit tests
@@ -13,13 +14,20 @@ vi.mock('../../app/constants.js', async () => {
   };
 });
 
+vi.mock('../SESService', () => ({
+  sendRawEmail: vi.fn(),
+}));
+
 describe('CampaignService', () => {
   let projectId: string;
+  let memberEmail: string;
   const prisma = getPrismaClient();
 
   beforeEach(async () => {
-    const {project} = await factories.createUserWithProject();
+    const {user, project} = await factories.createUserWithProject();
     projectId = project.id;
+    memberEmail = user.email;
+    vi.mocked(sendRawEmail).mockResolvedValue({messageId: 'test-message-id'});
   });
 
   describe('create', () => {
@@ -36,6 +44,19 @@ describe('CampaignService', () => {
       expect(campaign.name).toBe('Test Campaign');
       expect(campaign.status).toBe(CampaignStatus.DRAFT);
       expect(campaign.audienceType).toBe(CampaignAudienceType.ALL);
+    });
+
+    it('should persist campaign preview text', async () => {
+      const campaign = await CampaignService.create(projectId, {
+        name: 'Campaign with preview text',
+        subject: 'Test Subject',
+        previewText: 'Inbox preview for {{firstName}}',
+        body: '<p>Test Body</p>',
+        from: 'test@example.com',
+        audienceType: CampaignAudienceType.ALL,
+      });
+
+      expect(campaign.previewText).toBe('Inbox preview for {{firstName}}');
     });
 
     it('should create a campaign with SEGMENT audience type', async () => {
@@ -94,6 +115,18 @@ describe('CampaignService', () => {
 
       expect(updated.name).toBe('Updated Name');
       expect(updated.subject).toBe('Updated Subject');
+    });
+
+    it('should update and clear campaign preview text', async () => {
+      const campaign = await factories.createCampaign({projectId});
+
+      const updated = await CampaignService.update(projectId, campaign.id, {
+        previewText: 'Updated preview',
+      });
+      expect(updated.previewText).toBe('Updated preview');
+
+      const cleared = await CampaignService.update(projectId, campaign.id, {previewText: null});
+      expect(cleared.previewText).toBeNull();
     });
 
     it('should throw error when updating non-draft campaign', async () => {
@@ -212,12 +245,14 @@ describe('CampaignService', () => {
       const original = await factories.createCampaign({
         projectId,
         name: 'Original Campaign',
+        previewText: 'Original preview',
       });
 
       const duplicate = await CampaignService.duplicate(projectId, original.id);
 
       expect(duplicate.name).toBe('Original Campaign (Copy)');
       expect(duplicate.subject).toBe(original.subject);
+      expect(duplicate.previewText).toBe(original.previewText);
       expect(duplicate.body).toBe(original.body);
       expect(duplicate.status).toBe(CampaignStatus.DRAFT);
       expect(duplicate.id).not.toBe(original.id);
@@ -440,6 +475,48 @@ describe('CampaignService', () => {
       });
 
       expect(matching).toBe(5);
+    });
+  });
+
+  describe('processBatch preview text', () => {
+    it('should render and persist campaign preview text on recipient emails', async () => {
+      await factories.createContact({
+        projectId,
+        subscribed: true,
+        data: {firstName: 'Tom & Jerry'},
+      });
+      const campaign = await factories.createCampaign({
+        projectId,
+        status: CampaignStatus.SENDING,
+        previewText: 'A preview for {{firstName}}',
+      });
+
+      await CampaignService.processBatch(campaign.id, 1, 0, 500);
+
+      const email = await prisma.email.findFirstOrThrow({where: {campaignId: campaign.id}});
+      expect(email.previewText).toBe('A preview for Tom & Jerry');
+    });
+  });
+
+  describe('sendTest preview text', () => {
+    it('should include campaign preview text in the test email HTML', async () => {
+      await factories.createDomain({projectId, domain: 'example.com', verified: true});
+      const campaign = await factories.createCampaign({
+        projectId,
+        from: 'news@example.com',
+        previewText: 'Test-send preview',
+        body: '<html><body><p>Campaign body</p></body></html>',
+      });
+
+      await CampaignService.sendTest(projectId, campaign.id, memberEmail);
+
+      expect(sendRawEmail).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: expect.objectContaining({
+            html: expect.stringContaining('Test-send preview'),
+          }),
+        }),
+      );
     });
   });
 

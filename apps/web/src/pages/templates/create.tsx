@@ -28,6 +28,7 @@ export default function CreateTemplatePage() {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [subject, setSubject] = useState('');
+  const [previewText, setPreviewText] = useState('');
   const [body, setBody] = useState('');
   const [from, setFrom] = useState('');
   const [fromName, setFromName] = useState('');
@@ -51,6 +52,7 @@ export default function CreateTemplatePage() {
         name,
         description: description || undefined,
         subject,
+        previewText: previewText || null,
         body,
         from,
         fromName: fromName || null,
@@ -188,6 +190,23 @@ export default function CreateTemplatePage() {
                     placeholder="Welcome to our platform!"
                   />
                   <p className="text-xs text-neutral-500">Use {'{{variableName}}'} for dynamic content</p>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="previewText">Preview Text</Label>
+                  <Input
+                    id="previewText"
+                    type="text"
+                    value={previewText}
+                    onChange={e => setPreviewText(e.target.value)}
+                    placeholder="Optional preview text shown in inbox after subject"
+                    maxLength={200}
+                  />
+                  <p className={`text-xs ${previewText.length > 100 ? 'text-amber-600' : 'text-neutral-500'}`}>
+                    {previewText.length > 100
+                      ? `${previewText.length}/200 characters — most inboxes truncate after ~100`
+                      : 'Shown next to the subject in the inbox preview. Supports {{variableName}}.'}
+                  </p>
                 </div>
 
                 <EmailSettings

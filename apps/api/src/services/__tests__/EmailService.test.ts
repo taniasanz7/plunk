@@ -56,6 +56,49 @@ describe('EmailService', () => {
     });
   });
 
+  describe('Preview text', () => {
+    it('should persist preview text on queued campaign emails', async () => {
+      const email = await EmailService.sendCampaignEmail({
+        projectId,
+        contactId,
+        subject: 'Newsletter',
+        previewText: 'Preview for {{firstName}}',
+        body: '<p>Body</p>',
+        from: 'news@example.com',
+      });
+
+      expect(email.previewText).toBe('Preview for {{firstName}}');
+    });
+
+    it('should inject escaped preview text immediately inside the body', async () => {
+      const [contact, project] = await Promise.all([
+        prisma.contact.findUniqueOrThrow({where: {id: contactId}}),
+        prisma.project.findUniqueOrThrow({where: {id: projectId}}),
+      ]);
+
+      const html = EmailService.compile({
+        content: '<html><body><section>Body</section></body></html>',
+        contact,
+        project,
+        previewText: 'Deals <today> & "tomorrow"',
+        includeUnsubscribe: false,
+      });
+
+      expect(html).toContain(
+        '<body><div style="display:none;max-height:0;overflow:hidden;opacity:0;visibility:hidden;mso-hide:all;">Deals &lt;today&gt; &amp; &quot;tomorrow&quot;</div><section>Body</section>',
+      );
+    });
+
+    it('should not inject an empty preheader for whitespace-only preview text', async () => {
+      const [contact, project] = await Promise.all([
+        prisma.contact.findUniqueOrThrow({where: {id: contactId}}),
+        prisma.project.findUniqueOrThrow({where: {id: projectId}}),
+      ]);
+      const html = EmailService.compile({content: '<p>Body</p>', contact, project, previewText: '   '});
+      expect(html).not.toContain('display:none;max-height:0');
+    });
+  });
+
   // ========================================
   // SUBSCRIPTION ENFORCEMENT (GDPR)
   // ========================================

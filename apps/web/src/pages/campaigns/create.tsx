@@ -38,6 +38,7 @@ export default function CreateCampaignPage() {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [subject, setSubject] = useState('');
+  const [previewText, setPreviewText] = useState('');
   const [body, setBody] = useState('');
   const [from, setFrom] = useState('');
   const [fromName, setFromName] = useState('');
@@ -73,6 +74,7 @@ export default function CreateCampaignPage() {
           if (queryFrom && typeof queryFrom === 'string') setFrom(queryFrom);
           if (queryFromName && typeof queryFromName === 'string') setFromName(queryFromName);
           if (queryReplyTo && typeof queryReplyTo === 'string') setReplyTo(queryReplyTo);
+          setPreviewText(template.previewText || '');
           setBody(template.body);
           toast.success('Template loaded successfully');
         } catch {
@@ -83,7 +85,10 @@ export default function CreateCampaignPage() {
       } else if (campaignId && typeof campaignId === 'string') {
         setLoadingTemplate(true);
         try {
-          const campaign = await network.fetch<{data: {body: string}}>('GET', `/campaigns/${campaignId}`);
+          const campaign = await network.fetch<{data: {body: string; previewText?: string | null}}>(
+            'GET',
+            `/campaigns/${campaignId}`,
+          );
           if (queryName && typeof queryName === 'string') setName(queryName);
           if (querySubject && typeof querySubject === 'string') setSubject(querySubject);
           if (queryFrom && typeof queryFrom === 'string') setFrom(queryFrom);
@@ -93,6 +98,7 @@ export default function CreateCampaignPage() {
             setAudienceType(queryAudienceType as CampaignAudienceType);
           }
           if (querySegmentId && typeof querySegmentId === 'string') setSegmentId(querySegmentId);
+          setPreviewText(campaign.data.previewText || '');
           setBody(campaign.data.body);
           toast.success('Campaign loaded successfully');
         } catch {
@@ -134,6 +140,7 @@ export default function CreateCampaignPage() {
         name,
         description: description || undefined,
         subject,
+        previewText: previewText || null,
         body,
         from,
         fromName: fromName || null,
@@ -305,6 +312,22 @@ export default function CreateCampaignPage() {
                       onChange={e => setSubject(e.target.value)}
                       required
                     />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="previewText">Preview Text</Label>
+                    <Input
+                      id="previewText"
+                      value={previewText}
+                      onChange={e => setPreviewText(e.target.value)}
+                      placeholder="Optional preview text shown in inbox after subject"
+                      maxLength={200}
+                    />
+                    <p className={`text-xs ${previewText.length > 100 ? 'text-amber-600' : 'text-neutral-500'}`}>
+                      {previewText.length > 100
+                        ? `${previewText.length}/200 characters — most inboxes truncate after ~100`
+                        : 'Shown next to the subject in the inbox preview. Supports {{variableName}}.'}
+                    </p>
                   </div>
                 </CardContent>
               </Card>

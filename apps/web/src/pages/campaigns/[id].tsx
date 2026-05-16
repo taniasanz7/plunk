@@ -222,6 +222,7 @@ export default function CampaignDetailsPage() {
         name: editedCampaign.name,
         description: editedCampaign.description || undefined,
         subject: editedCampaign.subject,
+        previewText: editedCampaign.previewText || null,
         body: editedCampaign.body,
         from: editedCampaign.from,
         fromName: editedCampaign.fromName || null,
@@ -239,6 +240,7 @@ export default function CampaignDetailsPage() {
           name: updated.data.name,
           description: updated.data.description || '',
           subject: updated.data.subject,
+          previewText: updated.data.previewText || '',
           body: updated.data.body,
           from: updated.data.from,
           fromName: updated.data.fromName || '',
@@ -262,6 +264,7 @@ export default function CampaignDetailsPage() {
         name: campaign.data.name,
         description: campaign.data.description || '',
         subject: campaign.data.subject,
+        previewText: campaign.data.previewText || '',
         body: campaign.data.body,
         from: campaign.data.from,
         fromName: campaign.data.fromName || '',
@@ -283,6 +286,7 @@ export default function CampaignDetailsPage() {
       editedCampaign.name !== campaign.data.name ||
       (editedCampaign.description || '') !== (campaign.data.description || '') ||
       editedCampaign.subject !== campaign.data.subject ||
+      (editedCampaign.previewText || '') !== (campaign.data.previewText || '') ||
       editedCampaign.body !== campaign.data.body ||
       editedCampaign.from !== campaign.data.from ||
       (editedCampaign.fromName || '') !== (campaign.data.fromName || '') ||
@@ -669,6 +673,24 @@ export default function CampaignDetailsPage() {
                   onChange={e => setEditedCampaign({...editedCampaign, subject: e.target.value})}
                   required
                 />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="previewText">Preview Text</Label>
+                <Input
+                  id="previewText"
+                  value={editedCampaign.previewText || ''}
+                  onChange={e => setEditedCampaign({...editedCampaign, previewText: e.target.value})}
+                  placeholder="Optional preview text shown in inbox after subject"
+                  maxLength={200}
+                />
+                <p
+                  className={`text-xs ${(editedCampaign.previewText?.length || 0) > 100 ? 'text-amber-600' : 'text-neutral-500'}`}
+                >
+                  {(editedCampaign.previewText?.length || 0) > 100
+                    ? `${editedCampaign.previewText?.length || 0}/200 characters — most inboxes truncate after ~100`
+                    : 'Shown next to the subject in the inbox preview. Supports {{variableName}}.'}
+                </p>
               </div>
             </CardContent>
           </Card>

@@ -27,6 +27,7 @@ interface SendEmailParams {
   projectId: string;
   contactId: string;
   subject: string;
+  previewText?: string | null; // Optional inbox preview snippet (preheader). May contain {{vars}}.
   body: string;
   from: string;
   fromName?: string;
@@ -92,6 +93,7 @@ export class EmailService {
         projectId: params.projectId,
         contactId: params.contactId,
         subject: params.subject,
+        previewText: params.previewText ?? null,
         body: params.body,
         from: params.from,
         fromName: params.fromName,
@@ -156,6 +158,7 @@ export class EmailService {
         projectId: params.projectId,
         contactId: params.contactId,
         subject: params.subject,
+        previewText: params.previewText ?? null,
         body: params.body,
         from: params.from,
         fromName: params.fromName,
@@ -218,6 +221,7 @@ export class EmailService {
             projectId: params.projectId,
             contactId: params.contactId,
             subject: params.subject,
+            previewText: params.previewText ?? null,
             body: params.body,
             from: params.from,
             fromName: params.fromName,
@@ -261,6 +265,7 @@ export class EmailService {
         projectId: params.projectId,
         contactId: params.contactId,
         subject: params.subject,
+        previewText: params.previewText ?? null,
         body: params.body,
         from: params.from,
         fromName: params.fromName,
@@ -342,19 +347,21 @@ export class EmailService {
         email.contact.data && typeof email.contact.data === 'object' && !Array.isArray(email.contact.data)
           ? email.contact.data
           : {};
+      const renderData = {
+        id: email.contact.id,
+        email: email.contact.email,
+        ...contactData,
+        data: contactData,
+        unsubscribeUrl: `${DASHBOARD_URI}/unsubscribe/${email.contact.id}`,
+        subscribeUrl: `${DASHBOARD_URI}/subscribe/${email.contact.id}`,
+        manageUrl: `${DASHBOARD_URI}/manage/${email.contact.id}`,
+      };
       const formattedEmail = this.format({
         subject: email.subject,
         body: email.body,
-        data: {
-          id: email.contact.id,
-          email: email.contact.email,
-          ...contactData,
-          data: contactData,
-          unsubscribeUrl: `${DASHBOARD_URI}/unsubscribe/${email.contact.id}`,
-          subscribeUrl: `${DASHBOARD_URI}/subscribe/${email.contact.id}`,
-          manageUrl: `${DASHBOARD_URI}/manage/${email.contact.id}`,
-        },
+        data: renderData,
       });
+      const renderedPreviewText = email.previewText ? renderTemplate(email.previewText, renderData) : '';
 
       // Classify the email once: it decides both the unsubscribe footer and the
       // standards-based headers below.
@@ -370,6 +377,7 @@ export class EmailService {
         content: formattedEmail.body,
         contact: email.contact,
         project: email.project,
+        previewText: renderedPreviewText,
         includeUnsubscribe: emailClass === 'marketing',
       });
 
@@ -1048,6 +1056,30 @@ export class EmailService {
 </html>`;
   }
 
+  /** Escape user-controlled preview text for safe HTML text content. */
+  private static escapeHtml(text: string): string {
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  /**
+   * Inject a hidden preheader immediately inside the first body tag, or prepend
+   * it when the content is an HTML fragment. Empty/whitespace values are omitted.
+   */
+  public static injectPreviewText(content: string, previewText: string | null | undefined): string {
+    const trimmed = previewText?.trim();
+    if (!trimmed) return content;
+
+    const preheader = `<div style="display:none;max-height:0;overflow:hidden;opacity:0;visibility:hidden;mso-hide:all;">${this.escapeHtml(trimmed)}</div>`;
+    return /<body\b[^>]*>/i.test(content)
+      ? content.replace(/(<body\b[^>]*>)/i, `$1${preheader}`)
+      : `${preheader}${content}`;
+  }
+
   /**
    * Compile HTML email with optional unsubscribe footer and badge
    * Adds unsubscribe link and Plunk badge for free tier users (only when billing is enabled)
@@ -1056,16 +1088,19 @@ export class EmailService {
     content,
     contact,
     project,
+    previewText,
     includeUnsubscribe = true,
   }: {
     content: string;
     contact: Contact;
     project: Project;
+    previewText?: string | null;
     includeUnsubscribe?: boolean;
   }): string {
     // Wrap visual editor content with prose styles so the sent email matches the preview modal.
     // Custom HTML (from the HTML editor) already carries its own styles and is used as-is.
     let html = this.detectCustomHtmlPatterns(content) ? content : this.wrapWithEmailStyles(content);
+    html = this.injectPreviewText(html, previewText);
 
     const unsubscribeHtml = includeUnsubscribe
       ? (() => {

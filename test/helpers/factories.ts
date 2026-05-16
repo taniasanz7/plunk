@@ -62,6 +62,7 @@ export interface CampaignFactoryOptions {
   projectId: string;
   name?: string;
   subject?: string;
+  previewText?: string | null;
   body?: string;
   from?: string;
   status?: CampaignStatus;
@@ -222,6 +223,7 @@ export class TestFactories {
         projectId: options.projectId,
         name: options.name || `Campaign ${uniqueId()}`,
         subject: options.subject || 'Test Campaign Subject',
+        previewText: options.previewText,
         body: options.body || '<p>Test campaign body</p>',
         from: options.from || 'campaign@example.com',
         status: options.status || CampaignStatus.DRAFT,

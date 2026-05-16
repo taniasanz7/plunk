@@ -166,11 +166,12 @@ model Template {
   description String?
 
   // Content
-  subject  String
-  body     String // HTML content with {{variable}} placeholders
-  from     String
-  fromName String?
-  replyTo  String?
+  subject     String
+  previewText String? // Inbox preview snippet (preheader); rendered as hidden div at body top
+  body        String // HTML content with {{variable}} placeholders
+  from        String
+  fromName    String?
+  replyTo     String?
 
   // Type
   type TemplateType @default(MARKETING)
@@ -288,8 +289,9 @@ model Campaign {
   status      CampaignStatus @default(DRAFT)
 
   // Email content
-  subject  String
-  body     String  @db.Text
+  subject     String
+  previewText String? // Inbox preview snippet (preheader); rendered as hidden div at body top
+  body        String  @db.Text
   from     String
   fromName String?
   replyTo  String?
@@ -526,6 +528,7 @@ model Email {
 
   // Content (denormalized for history)
   subject     String
+  previewText String? // Inbox preview snippet (preheader) snapshot; rendered as hidden div at body top on send
   body        String // Rendered HTML
   from        String
   fromName    String?

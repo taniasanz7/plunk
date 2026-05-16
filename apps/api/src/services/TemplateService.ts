@@ -81,6 +81,7 @@ export class TemplateService {
       name: string;
       description?: string;
       subject: string;
+      previewText?: string | null;
       body: string;
       from: string;
       fromName?: string | null;
@@ -94,6 +95,7 @@ export class TemplateService {
         name: data.name,
         description: data.description,
         subject: data.subject,
+        previewText: data.previewText,
         body: data.body,
         from: data.from,
         fromName: data.fromName,
@@ -113,6 +115,7 @@ export class TemplateService {
       name?: string;
       description?: string;
       subject?: string;
+      previewText?: string | null;
       body?: string;
       from?: string;
       fromName?: string | null;
@@ -254,6 +257,7 @@ export class TemplateService {
         name: `${template.name} (Copy)`,
         description: template.description,
         subject: template.subject,
+        previewText: template.previewText,
         body: template.body,
         from: template.from,
         fromName: template.fromName,

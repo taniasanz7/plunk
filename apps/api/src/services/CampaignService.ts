@@ -1,5 +1,6 @@
 import type {Campaign, Contact, Prisma} from '@plunk/db';
 import {CampaignAudienceType, CampaignStatus, EmailSourceType, EmailStatus, TemplateType} from '@plunk/db';
+import {renderTemplate} from '@plunk/shared';
 import type {CreateCampaignData, FilterCondition, PaginatedResponse, UpdateCampaignData} from '@plunk/types';
 import {fromPrismaJson, toPrismaJson} from '@plunk/types';
 import signale from 'signale';
@@ -57,6 +58,7 @@ export class CampaignService {
         name: data.name,
         description: data.description,
         subject: data.subject,
+        previewText: data.previewText,
         body: data.body,
         from: data.from,
         fromName: data.fromName,
@@ -350,6 +352,7 @@ export class CampaignService {
         name: `${campaign.name} (Copy)`,
         description: campaign.description,
         subject: campaign.subject,
+        previewText: campaign.previewText,
         body: campaign.body,
         from: campaign.from,
         fromName: campaign.fromName,
@@ -565,12 +568,15 @@ export class CampaignService {
           data: variables,
         }).body;
 
+        const renderedPreviewText = campaign.previewText ? renderTemplate(campaign.previewText, variables) : null;
+
         await EmailService.sendCampaignEmail({
           projectId: campaign.projectId,
           contactId: contact.id,
           campaignId: campaign.id,
           templateId: undefined,
           subject: renderedSubject,
+          previewText: renderedPreviewText,
           body: renderedBody,
           from: campaign.from,
           fromName: campaign.fromName || undefined,
@@ -819,7 +825,7 @@ export class CampaignService {
       to: [testEmail],
       content: {
         subject: `[TEST] ${campaign.subject}`,
-        html: campaign.body,
+        html: EmailService.injectPreviewText(campaign.body, campaign.previewText),
       },
       reply: campaign.replyTo || undefined,
       headers: buildEmailHeaders({

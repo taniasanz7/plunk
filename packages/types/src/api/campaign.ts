@@ -12,6 +12,7 @@ export interface CreateCampaignData {
   name: string;
   description?: string;
   subject: string;
+  previewText?: string | null;
   body: string;
   from: string;
   fromName?: string | null;
@@ -29,6 +30,7 @@ export interface UpdateCampaignData {
   name?: string;
   description?: string;
   subject?: string;
+  previewText?: string | null;
   body?: string;
   from?: string;
   fromName?: string | null;

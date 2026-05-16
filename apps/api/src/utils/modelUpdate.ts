@@ -32,6 +32,7 @@ export function buildEmailFieldsUpdate(data: {
   name?: string;
   description?: string;
   subject?: string;
+  previewText?: string | null;
   body?: string;
   from?: string;
   fromName?: string | null;

@@ -563,6 +563,9 @@ export class WorkflowExecutionService {
 
     const renderedSubject = this.renderTemplate(step.template.subject, variables);
     const renderedBody = this.renderTemplate(step.template.body, variables);
+    const renderedPreviewText = step.template.previewText
+      ? this.renderTemplate(step.template.previewText, variables)
+      : null;
 
     // Determine recipient email
     // Schema validation ensures customEmail exists when type is CUSTOM
@@ -576,6 +579,7 @@ export class WorkflowExecutionService {
       workflowStepExecutionId: stepExecution.id, // Use stepExecution.id, not step.id
       templateId: step.template.id,
       subject: renderedSubject,
+      previewText: renderedPreviewText,
       body: renderedBody,
       from: step.template.from,
       fromName: step.template.fromName || undefined,

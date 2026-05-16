@@ -4,6 +4,7 @@
  */
 
 import {EmailStatus} from '@plunk/db';
+import {renderTemplate} from '@plunk/shared';
 import type {SendEmailJobData} from '@plunk/types';
 import {type Job, Worker} from 'bullmq';
 import signale from 'signale';
@@ -129,18 +130,20 @@ export async function createEmailWorker() {
 
         // Format template variables in subject and body
         const contactData = (email.contact.data as Record<string, unknown>) || {};
+        const renderData = {
+          email: email.contact.email,
+          ...contactData,
+          data: contactData,
+          unsubscribeUrl: `${DASHBOARD_URI}/unsubscribe/${email.contact.id}`,
+          subscribeUrl: `${DASHBOARD_URI}/subscribe/${email.contact.id}`,
+          manageUrl: `${DASHBOARD_URI}/manage/${email.contact.id}`,
+        };
         const formattedEmail = EmailService.format({
           subject: email.subject,
           body: email.body,
-          data: {
-            email: email.contact.email,
-            ...contactData,
-            data: contactData,
-            unsubscribeUrl: `${DASHBOARD_URI}/unsubscribe/${email.contact.id}`,
-            subscribeUrl: `${DASHBOARD_URI}/subscribe/${email.contact.id}`,
-            manageUrl: `${DASHBOARD_URI}/manage/${email.contact.id}`,
-          },
+          data: renderData,
         });
+        const renderedPreviewText = email.previewText ? renderTemplate(email.previewText, renderData) : '';
 
         // Classify the email once: it decides both the unsubscribe footer and the
         // standards-based headers below.
@@ -156,6 +159,7 @@ export async function createEmailWorker() {
           content: formattedEmail.body,
           contact: email.contact,
           project: email.project,
+          previewText: renderedPreviewText,
           includeUnsubscribe: emailClass === 'marketing',
         });
 
