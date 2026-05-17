@@ -978,4 +978,259 @@ describe('Workflow CONDITION Step - Comprehensive Operator Tests', () => {
       expect(defaultStepExecution).toBeNull();
     });
   });
+
+  // ========================================
+  // SEGMENT-MEMBERSHIP OPERATORS
+  // ========================================
+  describe('Segment-membership Operators', () => {
+    /**
+     * Helper: build a binary CONDITION step using a segment-membership
+     * operator referencing a freshly-created dynamic segment that matches
+     * contacts where data.plan === planValue.
+     */
+    async function createSegmentMembershipWorkflow(
+      contactData: Record<string, unknown>,
+      segmentPlanValue: string,
+      operator: 'memberOfSegment' | 'notMemberOfSegment',
+      fieldOverride?: string,
+    ) {
+      const contact = await factories.createContact({projectId, data: contactData});
+
+      const segment = await factories.createSegment(projectId, {
+        name: `plan-${segmentPlanValue}-${Date.now()}`,
+        filters: [{field: 'data.plan', operator: 'equals', value: segmentPlanValue}],
+      });
+
+      const workflow = await factories.createWorkflow({projectId});
+      const triggerStep = await prisma.workflowStep.findFirstOrThrow({
+        where: {workflowId: workflow.id, type: WorkflowStepType.TRIGGER},
+      });
+
+      const conditionStep = await prisma.workflowStep.create({
+        data: {
+          workflowId: workflow.id,
+          type: WorkflowStepType.CONDITION,
+          name: 'Segment membership',
+          position: {x: 100, y: 0},
+          config: {
+            field: fieldOverride ?? `segment.${segment.id}`,
+            operator,
+          },
+        },
+      });
+
+      const yesExit = await prisma.workflowStep.create({
+        data: {
+          workflowId: workflow.id,
+          type: WorkflowStepType.EXIT,
+          name: 'YES',
+          position: {x: 200, y: -50},
+          config: {reason: 'yes'},
+        },
+      });
+      const noExit = await prisma.workflowStep.create({
+        data: {
+          workflowId: workflow.id,
+          type: WorkflowStepType.EXIT,
+          name: 'NO',
+          position: {x: 200, y: 50},
+          config: {reason: 'no'},
+        },
+      });
+
+      await prisma.workflowTransition.create({
+        data: {fromStepId: triggerStep.id, toStepId: conditionStep.id},
+      });
+      await prisma.workflowTransition.create({
+        data: {fromStepId: conditionStep.id, toStepId: yesExit.id, condition: {branch: 'yes'}},
+      });
+      await prisma.workflowTransition.create({
+        data: {fromStepId: conditionStep.id, toStepId: noExit.id, condition: {branch: 'no'}},
+      });
+
+      const execution = await prisma.workflowExecution.create({
+        data: {
+          workflowId: workflow.id,
+          contactId: contact.id,
+          status: WorkflowExecutionStatus.RUNNING,
+          currentStepId: triggerStep.id,
+          context: {},
+        },
+      });
+
+      return {execution, triggerStep, conditionStep, contact, segment};
+    }
+
+    it('branches YES when contact matches segment and operator is memberOfSegment', async () => {
+      const {execution, triggerStep, conditionStep} = await createSegmentMembershipWorkflow(
+        {plan: 'premium'},
+        'premium',
+        'memberOfSegment',
+      );
+
+      await WorkflowExecutionService.processStepExecution(execution.id, triggerStep.id);
+      await WorkflowExecutionService.processStepExecution(execution.id, conditionStep.id);
+
+      expect(await getConditionBranch(execution.id, conditionStep.id)).toBe('yes');
+    });
+
+    it('branches NO when contact does not match segment and operator is memberOfSegment', async () => {
+      const {execution, triggerStep, conditionStep} = await createSegmentMembershipWorkflow(
+        {plan: 'basic'},
+        'premium',
+        'memberOfSegment',
+      );
+
+      await WorkflowExecutionService.processStepExecution(execution.id, triggerStep.id);
+      await WorkflowExecutionService.processStepExecution(execution.id, conditionStep.id);
+
+      expect(await getConditionBranch(execution.id, conditionStep.id)).toBe('no');
+    });
+
+    it('branches NO when contact matches segment and operator is notMemberOfSegment', async () => {
+      const {execution, triggerStep, conditionStep} = await createSegmentMembershipWorkflow(
+        {plan: 'premium'},
+        'premium',
+        'notMemberOfSegment',
+      );
+
+      await WorkflowExecutionService.processStepExecution(execution.id, triggerStep.id);
+      await WorkflowExecutionService.processStepExecution(execution.id, conditionStep.id);
+
+      expect(await getConditionBranch(execution.id, conditionStep.id)).toBe('no');
+    });
+
+    it('branches YES when contact does not match segment and operator is notMemberOfSegment', async () => {
+      const {execution, triggerStep, conditionStep} = await createSegmentMembershipWorkflow(
+        {plan: 'basic'},
+        'premium',
+        'notMemberOfSegment',
+      );
+
+      await WorkflowExecutionService.processStepExecution(execution.id, triggerStep.id);
+      await WorkflowExecutionService.processStepExecution(execution.id, conditionStep.id);
+
+      expect(await getConditionBranch(execution.id, conditionStep.id)).toBe('yes');
+    });
+
+    it('accepts bare segment id in field (without segment. prefix)', async () => {
+      const {execution, triggerStep, conditionStep, segment} = await createSegmentMembershipWorkflow(
+        {plan: 'premium'},
+        'premium',
+        'memberOfSegment',
+        'placeholder', // overwritten below
+      );
+
+      // Replace the field with the bare uuid form
+      await prisma.workflowStep.update({
+        where: {id: conditionStep.id},
+        data: {config: {field: segment.id, operator: 'memberOfSegment'}},
+      });
+
+      await WorkflowExecutionService.processStepExecution(execution.id, triggerStep.id);
+      await WorkflowExecutionService.processStepExecution(execution.id, conditionStep.id);
+
+      expect(await getConditionBranch(execution.id, conditionStep.id)).toBe('yes');
+    });
+
+    it('throws when the referenced segment does not exist', async () => {
+      const contact = await factories.createContact({projectId, data: {plan: 'premium'}});
+      const workflow = await factories.createWorkflow({projectId});
+      const triggerStep = await prisma.workflowStep.findFirstOrThrow({
+        where: {workflowId: workflow.id, type: WorkflowStepType.TRIGGER},
+      });
+
+      const conditionStep = await prisma.workflowStep.create({
+        data: {
+          workflowId: workflow.id,
+          type: WorkflowStepType.CONDITION,
+          name: 'Missing segment',
+          position: {x: 100, y: 0},
+          config: {
+            field: 'segment.00000000-0000-0000-0000-000000000000',
+            operator: 'memberOfSegment',
+          },
+        },
+      });
+
+      await prisma.workflowTransition.create({
+        data: {fromStepId: triggerStep.id, toStepId: conditionStep.id},
+      });
+
+      const execution = await prisma.workflowExecution.create({
+        data: {
+          workflowId: workflow.id,
+          contactId: contact.id,
+          status: WorkflowExecutionStatus.RUNNING,
+          currentStepId: triggerStep.id,
+          context: {},
+        },
+      });
+
+      // processNextSteps cascades trigger -> condition, so the condition's
+      // throw surfaces from the trigger-step call.
+      await expect(
+        WorkflowExecutionService.processStepExecution(execution.id, triggerStep.id),
+      ).rejects.toThrow(/missing or out-of-project segment/i);
+
+      const stepExecution = await prisma.workflowStepExecution.findFirst({
+        where: {executionId: execution.id, stepId: conditionStep.id},
+      });
+      expect(stepExecution?.status).toBe('FAILED');
+      expect(String(stepExecution?.error ?? '')).toMatch(/missing or out-of-project segment/i);
+    });
+
+    it('rejects segment-membership operator inside multi-mode branches', async () => {
+      const contact = await factories.createContact({projectId, data: {plan: 'premium'}});
+      const segment = await factories.createSegment(projectId, {
+        name: `multi-rejected-${Date.now()}`,
+        filters: [{field: 'data.plan', operator: 'equals', value: 'premium'}],
+      });
+
+      const workflow = await factories.createWorkflow({projectId});
+      const triggerStep = await prisma.workflowStep.findFirstOrThrow({
+        where: {workflowId: workflow.id, type: WorkflowStepType.TRIGGER},
+      });
+
+      const conditionStep = await prisma.workflowStep.create({
+        data: {
+          workflowId: workflow.id,
+          type: WorkflowStepType.CONDITION,
+          name: 'Multi with segment',
+          position: {x: 100, y: 0},
+          config: {
+            mode: 'multi',
+            field: `segment.${segment.id}`,
+            branches: [
+              {id: 'br1', name: 'Premium', operator: 'memberOfSegment'},
+            ],
+          },
+        },
+      });
+
+      await prisma.workflowTransition.create({
+        data: {fromStepId: triggerStep.id, toStepId: conditionStep.id},
+      });
+
+      const execution = await prisma.workflowExecution.create({
+        data: {
+          workflowId: workflow.id,
+          contactId: contact.id,
+          status: WorkflowExecutionStatus.RUNNING,
+          currentStepId: triggerStep.id,
+          context: {},
+        },
+      });
+
+      await expect(
+        WorkflowExecutionService.processStepExecution(execution.id, triggerStep.id),
+      ).rejects.toThrow(/binary CONDITION mode/i);
+
+      const stepExecution = await prisma.workflowStepExecution.findFirst({
+        where: {executionId: execution.id, stepId: conditionStep.id},
+      });
+      expect(stepExecution?.status).toBe('FAILED');
+      expect(String(stepExecution?.error ?? '')).toMatch(/binary CONDITION mode/i);
+    });
+  });
 });

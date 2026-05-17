@@ -29,6 +29,13 @@ interface OperatorOption {
   types: FieldType[];
 }
 
+interface SegmentSummary {
+  id: string;
+  name: string;
+}
+
+const SEGMENT_FIELD_PREFIX = 'segment.';
+
 const ALL_OPERATORS: OperatorOption[] = [
   {value: 'equals',             label: 'Equals',                 types: ['string', 'number', 'boolean', 'date']},
   {value: 'notEquals',          label: 'Not Equals',             types: ['string', 'number', 'boolean', 'date']},
@@ -42,7 +49,21 @@ const ALL_OPERATORS: OperatorOption[] = [
   {value: 'notExists',          label: 'Does not exist',         types: ['string', 'number', 'boolean', 'date']},
 ];
 
-const NO_VALUE_OPERATORS = ['exists', 'notExists'];
+// Segment-membership operators are presented separately from field-typed
+// operators above because they don't operate on a contact field — they're
+// only available in binary mode and consume `field` as a `segment.<uuid>`
+// namespace (see WorkflowExecutionService.executeCondition).
+const SEGMENT_OPERATORS: OperatorOption[] = [
+  {value: 'memberOfSegment',    label: 'Member of segment',      types: []},
+  {value: 'notMemberOfSegment', label: 'Not member of segment',  types: []},
+];
+
+const NO_VALUE_OPERATORS = ['exists', 'notExists', 'memberOfSegment', 'notMemberOfSegment'];
+const SEGMENT_OPERATOR_VALUES = SEGMENT_OPERATORS.map(op => op.value);
+
+function isSegmentOperator(op: string): boolean {
+  return SEGMENT_OPERATOR_VALUES.includes(op);
+}
 
 function getOperatorsForType(fieldType: string): OperatorOption[] {
   return ALL_OPERATORS.filter(op => op.types.includes(fieldType as FieldType));
@@ -110,11 +131,24 @@ function hasBinaryConnections(step: StepWithTemplate): boolean {
 export function ConditionStepDialog({step, workflowId, open, onOpenChange, onSuccess}: EditStepDialogProps) {
   const config = getStepConfig(step);
 
+  // Decode field for state. If the persisted field is `segment.<uuid>` and the
+  // operator is one of the segment-membership operators, hold the segment id
+  // in `segmentId` instead of `conditionField` so the segment picker can drive
+  // it independently of the contact-field picker.
+  const initialField = extractInitialField(config.field);
+  const initialOperator = String(config.operator ?? 'equals');
+  const initialIsSegmentOp = isSegmentOperator(initialOperator);
+  const initialSegmentId =
+    initialIsSegmentOp && initialField.startsWith(SEGMENT_FIELD_PREFIX)
+      ? initialField.substring(SEGMENT_FIELD_PREFIX.length)
+      : '';
+
   const [name, setName] = useState(step.name);
   const [conditionMode, setConditionMode] = useState<ConditionMode>(config.mode === 'multi' ? 'multi' : 'binary');
-  const [conditionField, setConditionField] = useState(extractInitialField(config.field));
-  const [conditionOperator, setConditionOperator] = useState(String(config.operator ?? 'equals'));
+  const [conditionField, setConditionField] = useState(initialIsSegmentOp ? '' : initialField);
+  const [conditionOperator, setConditionOperator] = useState(initialOperator);
   const [conditionValue, setConditionValue] = useState(String(config.value ?? ''));
+  const [conditionSegmentId, setConditionSegmentId] = useState(initialSegmentId);
   const [conditionBranches, setConditionBranches] = useState<BranchInput[]>(() => extractInitialBranches(config));
 
   const {data: workflow} = useSWR<{triggerConfig: {eventName?: string} | null}>(
@@ -133,6 +167,13 @@ export function ConditionStepDialog({step, workflowId, open, onOpenChange, onSuc
     {revalidateOnFocus: false},
   );
 
+  // Segments are only fetched when the dialog is open AND we're in binary mode
+  // (segment-membership operators aren't offered in multi mode).
+  const segmentsUrl = open && conditionMode === 'binary' ? '/segments' : null;
+  const {data: segmentsData, isLoading: loadingSegments} = useSWR<SegmentSummary[]>(segmentsUrl, {
+    revalidateOnFocus: false,
+  });
+
   const availableFields: AvailableField[] = useMemo(() => {
     if (!fieldsData) return [];
     return (
@@ -146,14 +187,41 @@ export function ConditionStepDialog({step, workflowId, open, onOpenChange, onSuc
   const blocksMultiToBinary = hasMultiBranchConnections(step);
   const blocksBinaryToMulti = hasBinaryConnections(step);
 
+  const usingSegmentOperator = conditionMode === 'binary' && isSegmentOperator(conditionOperator);
   const currentFieldType = availableFields.find(f => f.field === conditionField)?.type ?? 'string';
-  const validOperators = useMemo(() => getOperatorsForType(currentFieldType), [currentFieldType]);
+
+  // In binary mode the operator dropdown lists field-typed operators for the
+  // chosen field PLUS the two segment-membership operators (which don't depend
+  // on a field type). In multi mode, segment operators are not offered.
+  const validOperators = useMemo(() => {
+    const fieldOps = getOperatorsForType(currentFieldType);
+    if (conditionMode === 'binary') {
+      return [...fieldOps, ...SEGMENT_OPERATORS];
+    }
+    return fieldOps;
+  }, [currentFieldType, conditionMode]);
+
   const needsValue = !NO_VALUE_OPERATORS.includes(conditionOperator);
 
   const handleModeChange = (newMode: ConditionMode) => {
     if (conditionMode === 'multi' && newMode === 'binary' && blocksMultiToBinary) return;
     if (conditionMode === 'binary' && newMode === 'multi' && blocksBinaryToMulti) return;
+    // Switching to multi while a segment operator is selected resets the
+    // operator to keep multi-mode valid (segment ops are binary-only).
+    if (newMode === 'multi' && isSegmentOperator(conditionOperator)) {
+      setConditionOperator('equals');
+    }
     setConditionMode(newMode);
+  };
+
+  const handleOperatorChange = (newOperator: string) => {
+    setConditionOperator(newOperator);
+    if (isSegmentOperator(newOperator)) {
+      // Operating on a segment, not a contact field — clear the field
+      // selection so a stale value doesn't get persisted.
+      setConditionField('');
+      setConditionValue('');
+    }
   };
 
   const handleConditionFieldChange = (newField: string) => {
@@ -162,7 +230,12 @@ export function ConditionStepDialog({step, workflowId, open, onOpenChange, onSuc
 
     setConditionField(newField);
 
-    if (!newValidOperators.some(op => op.value === conditionOperator)) {
+    // If the current operator isn't valid for the new field's type AND isn't a
+    // segment-membership operator (which doesn't depend on the field), reset.
+    if (
+      !newValidOperators.some(op => op.value === conditionOperator) &&
+      !isSegmentOperator(conditionOperator)
+    ) {
       setConditionOperator('equals');
     }
 
@@ -202,6 +275,19 @@ export function ConditionStepDialog({step, workflowId, open, onOpenChange, onSuc
           operator: b.operator,
           value:    parseConditionValue(b.value),
         })),
+      };
+    } else if (usingSegmentOperator) {
+      if (!conditionSegmentId) {
+        toast.error('Please select a segment');
+        return;
+      }
+      newConfig = {
+        // Encode the segment selection in the `field` slot using the same
+        // `segment.<uuid>` convention the segment system uses internally
+        // (packages/types/src/segments/index.ts) so the executor can decode it
+        // without a separate value path.
+        field:    `${SEGMENT_FIELD_PREFIX}${conditionSegmentId}`,
+        operator: conditionOperator,
       };
     } else {
       newConfig = {
@@ -247,22 +333,33 @@ export function ConditionStepDialog({step, workflowId, open, onOpenChange, onSuc
             showWiringWarning={showWiringWarning}
           />
 
-          <ConditionFieldPicker
-            value={conditionField}
-            onChange={handleConditionFieldChange}
-            availableFields={availableFields}
-            loading={loadingFields}
-          />
+          {!usingSegmentOperator && (
+            <ConditionFieldPicker
+              value={conditionField}
+              onChange={handleConditionFieldChange}
+              availableFields={availableFields}
+              loading={loadingFields}
+            />
+          )}
 
           {conditionMode === 'binary' && (
             <BinaryCondition
               operator={conditionOperator}
               value={conditionValue}
-              onOperatorChange={setConditionOperator}
+              onOperatorChange={handleOperatorChange}
               onValueChange={setConditionValue}
               validOperators={validOperators}
               fieldType={currentFieldType}
               needsValue={needsValue}
+            />
+          )}
+
+          {usingSegmentOperator && (
+            <SegmentPicker
+              value={conditionSegmentId}
+              onChange={setConditionSegmentId}
+              segments={segmentsData ?? []}
+              loading={loadingSegments}
             />
           )}
 
@@ -419,6 +516,44 @@ function ConditionFieldPicker({value, onChange, availableFields, loading}: Condi
           placeholder="e.g., contact.subscribed or contact.data.plan"
           className="mt-1.5"
         />
+      )}
+    </div>
+  );
+}
+
+interface SegmentPickerProps {
+  value: string;
+  onChange: (value: string) => void;
+  segments: SegmentSummary[];
+  loading: boolean;
+}
+
+function SegmentPicker({value, onChange, segments, loading}: SegmentPickerProps) {
+  return (
+    <div>
+      <Label htmlFor="editConditionSegment">Segment *</Label>
+      {loading ? (
+        <div className="flex items-center gap-2 px-3 py-2 border border-neutral-200 rounded-lg text-sm text-neutral-500 mt-1.5">
+          <IconSpinner size="sm" />
+          Loading segments...
+        </div>
+      ) : segments.length > 0 ? (
+        <Select value={value} onValueChange={onChange} required>
+          <SelectTrigger id="editConditionSegment" className="mt-1.5">
+            <SelectValue placeholder="Select a segment..." />
+          </SelectTrigger>
+          <SelectContent>
+            {segments.map(segment => (
+              <SelectItem key={segment.id} value={segment.id}>
+                {segment.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      ) : (
+        <div className="px-3 py-2 border border-neutral-200 rounded-lg text-sm text-neutral-500 mt-1.5">
+          No segments found. Create a segment first to use segment-membership conditions.
+        </div>
       )}
     </div>
   );

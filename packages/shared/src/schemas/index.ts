@@ -309,6 +309,11 @@ export const WorkflowStepConfigSchemas = {
         'lessThanOrEqual',
         'exists',
         'notExists',
+        // Segment-membership operators. When used, `field` is interpreted as a
+        // `segment.<uuid>` namespace (mirroring the segment system's own
+        // convention) and `value` is ignored. See WorkflowExecutionService.
+        'memberOfSegment',
+        'notMemberOfSegment',
       ]),
       value: z.any().optional(),
     }),
@@ -332,6 +337,11 @@ export const WorkflowStepConfigSchemas = {
               'lessThanOrEqual',
               'exists',
               'notExists',
+              // Accepted in schema for forward-compatibility but rejected at
+              // execution time — segment-membership only supported in binary
+              // mode for now (see WorkflowExecutionService.executeCondition).
+              'memberOfSegment',
+              'notMemberOfSegment',
             ]),
             value: z.any().optional(),
           }),

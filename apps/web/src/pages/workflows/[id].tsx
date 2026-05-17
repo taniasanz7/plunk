@@ -183,11 +183,30 @@ export default function WorkflowEditorPage() {
               }
             }
 
+            const operatorStr = String(config.operator || '');
+            const isSegmentMembership =
+              operatorStr === 'memberOfSegment' || operatorStr === 'notMemberOfSegment';
+
             if (!fieldValue || !config.operator) {
               errors.push(`"${step.name}" step is missing condition configuration (field or operator)`);
+            } else if (isSegmentMembership) {
+              // Segment-membership operators expect `field` shaped as
+              // `segment.<uuid>` so the executor can locate the referenced
+              // segment without disturbing the existing dot-notation
+              // resolveField pipeline.
+              if (!/^segment\.[0-9a-f-]{36}$/i.test(fieldValue)) {
+                errors.push(
+                  `"${step.name}" step has a segment-membership operator but no segment selected`,
+                );
+              }
             }
-            // Check if value is required for this operator
-            const operatorNeedsValue = !['exists', 'notExists'].includes(String(config.operator || ''));
+
+            // Check if value is required for this operator. exists/notExists
+            // and the segment-membership operators all encode their target in
+            // field/operator alone, so no value is needed.
+            const operatorNeedsValue = !['exists', 'notExists', 'memberOfSegment', 'notMemberOfSegment'].includes(
+              operatorStr,
+            );
             if (operatorNeedsValue && (config.value === undefined || config.value === null || config.value === '')) {
               errors.push(`"${step.name}" step is missing a value for the condition`);
             }

@@ -8,6 +8,7 @@ import type {
   WorkflowStepExecution,
 } from '@plunk/db';
 import {StepExecutionStatus, WorkflowExecutionStatus} from '@plunk/db';
+import type {FilterCondition} from '@plunk/types';
 import {toPrismaJson} from '@plunk/types';
 import {renderTemplate, WorkflowStepConfigSchemas} from '@plunk/shared';
 import dns from 'node:dns/promises';
@@ -21,6 +22,7 @@ import {DASHBOARD_URI} from '../app/constants.js';
 import {EmailService} from './EmailService.js';
 import {NtfyService} from './NtfyService.js';
 import {QueueService} from './QueueService.js';
+import {SegmentService} from './SegmentService.js';
 
 type StepConfig = Prisma.JsonValue;
 type StepResult = Record<string, unknown>;
@@ -748,6 +750,17 @@ export class WorkflowExecutionService {
 
     // Multi-branch mode (switch/case)
     if ('mode' in parsed && parsed.mode === 'multi') {
+      // TODO: extend segment-membership operators to multi-mode. For now we
+      // reject them with a clear error so users aren't silently mis-routed.
+      for (const branch of parsed.branches) {
+        if (branch.operator === 'memberOfSegment' || branch.operator === 'notMemberOfSegment') {
+          throw new HttpException(
+            400,
+            'Segment-membership operators (memberOfSegment / notMemberOfSegment) are only supported in binary CONDITION mode',
+          );
+        }
+      }
+
       const actualValue = this.resolveField(parsed.field, fieldData);
 
       for (const branch of parsed.branches) {
@@ -776,6 +789,69 @@ export class WorkflowExecutionService {
     const field = parsed.field;
     const operator = 'operator' in parsed ? parsed.operator : 'equals';
     const value = 'value' in parsed ? parsed.value : undefined;
+
+    // Segment-membership operators: `field` is interpreted as a
+    // `segment.<uuid>` namespace (or bare segment id for forgiveness) and
+    // `value` is ignored. Membership is computed by reusing the segment
+    // system's own where-clause builder, scoped to this single contact.
+    if (operator === 'memberOfSegment' || operator === 'notMemberOfSegment') {
+      const segmentId = field.startsWith('segment.') ? field.substring('segment.'.length) : field;
+
+      if (!segmentId) {
+        throw new HttpException(400, 'Segment-membership CONDITION requires a segment id in field');
+      }
+
+      const segment = await prisma.segment.findFirst({
+        where: {id: segmentId, projectId: execution.workflow.projectId},
+        select: {id: true, condition: true, type: true, trackMembership: true},
+      });
+
+      if (!segment) {
+        throw new HttpException(
+          400,
+          `Segment-membership CONDITION references missing or out-of-project segment: ${segmentId}`,
+        );
+      }
+
+      let isMember = false;
+
+      if (segment.type === 'STATIC' || segment.trackMembership) {
+        // Static/tracked segments: membership is materialised, so a direct
+        // lookup on the membership table is cheapest and avoids re-evaluating
+        // the (potentially complex) underlying condition.
+        const membership = await prisma.segmentMembership.findFirst({
+          where: {segmentId: segment.id, contactId: contact.id, exitedAt: null},
+          select: {contactId: true},
+        });
+        isMember = membership !== null;
+      } else {
+        // Dynamic untracked: build the segment's where-clause and check whether
+        // it matches this single contact. visitedSegments seeded with this
+        // segment's own id to break self-cycles upfront; SegmentService's own
+        // recursion handles deeper cycles via the same Set.
+        const filterCondition = segment.condition as unknown as FilterCondition;
+        const visited = new Set<string>([segment.id]);
+        const segmentWhere = await SegmentService.buildConditionClause(filterCondition, visited);
+
+        const matched = await prisma.contact.findFirst({
+          where: {AND: [{id: contact.id}, segmentWhere]},
+          select: {id: true},
+        });
+        isMember = matched !== null;
+      }
+
+      const result = operator === 'memberOfSegment' ? isMember : !isMember;
+
+      return {
+        field,
+        operator,
+        expectedValue: operator === 'memberOfSegment',
+        actualValue: isMember,
+        result,
+        branch: result ? 'yes' : 'no',
+      };
+    }
+
     const actualValue = this.resolveField(field, fieldData);
     const result = this.evaluateCondition(actualValue, operator, value);
 
