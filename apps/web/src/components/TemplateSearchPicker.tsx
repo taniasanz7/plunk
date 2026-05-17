@@ -48,10 +48,30 @@ export function TemplateSearchPicker({value, initialName, onChange}: TemplateSea
     {revalidateOnFocus: false},
   );
 
-  // When closed, show the selected template's name rather than the raw query
+  // Fall back to a single-template fetch when we have a value but no resolved
+  // name yet (e.g. editing an existing segment whose template isn't on page 1
+  // of the list). Skipped once the search list contains the template or once
+  // we have a cached selectedName/initialName.
+  const listHasValue = !!data?.data.find(t => t.id === value);
+  const hasResolvedName = !!(selectedName || initialName) || listHasValue;
+  const {data: singleTemplate} = useSWR<Template>(
+    value && !hasResolvedName ? `/templates/${value}` : null,
+    {revalidateOnFocus: false},
+  );
+
+  // When closed, show the selected template's name rather than the raw query.
+  // Use `||` not `??` so empty-string `selectedName` / `initialName` fall
+  // through to the single-template fetch (selectedName defaults to '' for
+  // freshly mounted pickers, which would otherwise short-circuit the chain).
   const displayValue = open
     ? query
-    : (value ? (data?.data.find(t => t.id === value)?.name ?? selectedName ?? initialName ?? '') : '');
+    : (value
+        ? (data?.data.find(t => t.id === value)?.name ||
+           selectedName ||
+           initialName ||
+           singleTemplate?.name ||
+           '')
+        : '');
 
   return (
     <div className="relative">

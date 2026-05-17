@@ -709,4 +709,245 @@ describe('SegmentService', () => {
       expect(ids).toContain(recent.id);
     });
   });
+
+  describe('Email activity filters with templateId scoping', () => {
+    it('triggered + templateId: matches contacts who opened THAT template', async () => {
+      const templateA = await factories.createTemplate({projectId, name: 'A'});
+      const templateB = await factories.createTemplate({projectId, name: 'B'});
+
+      const openedA = await factories.createContact({projectId});
+      await factories.createEmail({
+        projectId,
+        contactId: openedA.id,
+        templateId: templateA.id,
+        openedAt: new Date(),
+      });
+
+      const openedB = await factories.createContact({projectId});
+      await factories.createEmail({
+        projectId,
+        contactId: openedB.id,
+        templateId: templateB.id,
+        openedAt: new Date(),
+      });
+
+      const segment = await factories.createSegment(projectId, {
+        name: 'Opened template A',
+        filters: [{field: 'email.opened', operator: 'triggered', templateId: templateA.id}],
+      });
+
+      const result = await SegmentService.getContacts(projectId, segment.id);
+      const ids = result.data.map(c => c.id);
+      expect(ids).toContain(openedA.id);
+      expect(ids).not.toContain(openedB.id);
+    });
+
+    it('triggered without templateId: matches contacts who opened ANY template', async () => {
+      const templateA = await factories.createTemplate({projectId, name: 'A'});
+      const templateB = await factories.createTemplate({projectId, name: 'B'});
+
+      const openedA = await factories.createContact({projectId});
+      await factories.createEmail({
+        projectId,
+        contactId: openedA.id,
+        templateId: templateA.id,
+        openedAt: new Date(),
+      });
+
+      const openedB = await factories.createContact({projectId});
+      await factories.createEmail({
+        projectId,
+        contactId: openedB.id,
+        templateId: templateB.id,
+        openedAt: new Date(),
+      });
+
+      const segment = await factories.createSegment(projectId, {
+        name: 'Opened any template',
+        filters: [{field: 'email.opened', operator: 'triggered'}],
+      });
+
+      const result = await SegmentService.getContacts(projectId, segment.id);
+      const ids = result.data.map(c => c.id);
+      expect(ids).toContain(openedA.id);
+      expect(ids).toContain(openedB.id);
+    });
+
+    it('triggeredWithin + templateId: respects both template AND time window', async () => {
+      const templateA = await factories.createTemplate({projectId, name: 'A'});
+
+      const recent = await factories.createContact({projectId});
+      await factories.createEmail({
+        projectId,
+        contactId: recent.id,
+        templateId: templateA.id,
+        openedAt: new Date(), // now
+      });
+
+      const old = await factories.createContact({projectId});
+      await factories.createEmail({
+        projectId,
+        contactId: old.id,
+        templateId: templateA.id,
+        openedAt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000), // 30 days ago
+      });
+
+      const segment = await factories.createSegment(projectId, {
+        name: 'Opened template A in last 7 days',
+        filters: [
+          {
+            field: 'email.opened',
+            operator: 'triggeredWithin',
+            value: 7,
+            unit: 'days',
+            templateId: templateA.id,
+          },
+        ],
+      });
+
+      const result = await SegmentService.getContacts(projectId, segment.id);
+      const ids = result.data.map(c => c.id);
+      expect(ids).toContain(recent.id);
+      expect(ids).not.toContain(old.id);
+    });
+
+    it('notTriggered + templateId: matches contacts with no opens of THIS template (even if they opened others)', async () => {
+      const templateA = await factories.createTemplate({projectId, name: 'A'});
+      const templateB = await factories.createTemplate({projectId, name: 'B'});
+
+      // Opens A only — should NOT be in "never opened B"
+      const onlyA = await factories.createContact({projectId});
+      await factories.createEmail({
+        projectId,
+        contactId: onlyA.id,
+        templateId: templateA.id,
+        openedAt: new Date(),
+      });
+
+      // Opens B — should NOT be in "never opened B"
+      const openedB = await factories.createContact({projectId});
+      await factories.createEmail({
+        projectId,
+        contactId: openedB.id,
+        templateId: templateB.id,
+        openedAt: new Date(),
+      });
+
+      // No emails at all — should be in "never opened B"
+      const noActivity = await factories.createContact({projectId});
+
+      const segment = await factories.createSegment(projectId, {
+        name: 'Never opened template B',
+        filters: [{field: 'email.opened', operator: 'notTriggered', templateId: templateB.id}],
+      });
+
+      const result = await SegmentService.getContacts(projectId, segment.id);
+      const ids = result.data.map(c => c.id);
+      expect(ids).toContain(onlyA.id);
+      expect(ids).toContain(noActivity.id);
+      expect(ids).not.toContain(openedB.id);
+    });
+
+    it('triggeredOlderThan + templateId: matches contacts who opened THAT template, but not recently', async () => {
+      const templateA = await factories.createTemplate({projectId, name: 'A'});
+      const templateB = await factories.createTemplate({projectId, name: 'B'});
+
+      // Opened A 30 days ago — matches "opened A but not in last 7 days"
+      const oldOpenA = await factories.createContact({projectId});
+      await factories.createEmail({
+        projectId,
+        contactId: oldOpenA.id,
+        templateId: templateA.id,
+        openedAt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
+      });
+
+      // Opened A recently — does NOT match (within recent window)
+      const recentOpenA = await factories.createContact({projectId});
+      await factories.createEmail({
+        projectId,
+        contactId: recentOpenA.id,
+        templateId: templateA.id,
+        openedAt: new Date(),
+      });
+
+      // Opened B 30 days ago — does NOT match (wrong template)
+      const oldOpenB = await factories.createContact({projectId});
+      await factories.createEmail({
+        projectId,
+        contactId: oldOpenB.id,
+        templateId: templateB.id,
+        openedAt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
+      });
+
+      const segment = await factories.createSegment(projectId, {
+        name: 'Opened A, but not in last 7 days',
+        filters: [
+          {
+            field: 'email.opened',
+            operator: 'triggeredOlderThan',
+            value: 7,
+            unit: 'days',
+            templateId: templateA.id,
+          },
+        ],
+      });
+
+      const result = await SegmentService.getContacts(projectId, segment.id);
+      const ids = result.data.map(c => c.id);
+      expect(ids).toContain(oldOpenA.id);
+      expect(ids).not.toContain(recentOpenA.id);
+      expect(ids).not.toContain(oldOpenB.id);
+    });
+
+    it('notTriggeredWithin + templateId: matches contacts who have not opened THIS template recently', async () => {
+      const templateA = await factories.createTemplate({projectId, name: 'A'});
+      const templateB = await factories.createTemplate({projectId, name: 'B'});
+
+      // Opened A 30 days ago — matches (not within last 7 days)
+      const oldOpenA = await factories.createContact({projectId});
+      await factories.createEmail({
+        projectId,
+        contactId: oldOpenA.id,
+        templateId: templateA.id,
+        openedAt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
+      });
+
+      // Opened A recently — does NOT match
+      const recentOpenA = await factories.createContact({projectId});
+      await factories.createEmail({
+        projectId,
+        contactId: recentOpenA.id,
+        templateId: templateA.id,
+        openedAt: new Date(),
+      });
+
+      // Opened B recently — DOES match "not opened A within 7d" (B doesn't count)
+      const recentOpenB = await factories.createContact({projectId});
+      await factories.createEmail({
+        projectId,
+        contactId: recentOpenB.id,
+        templateId: templateB.id,
+        openedAt: new Date(),
+      });
+
+      const segment = await factories.createSegment(projectId, {
+        name: 'Has not opened A in last 7 days',
+        filters: [
+          {
+            field: 'email.opened',
+            operator: 'notTriggeredWithin',
+            value: 7,
+            unit: 'days',
+            templateId: templateA.id,
+          },
+        ],
+      });
+
+      const result = await SegmentService.getContacts(projectId, segment.id);
+      const ids = result.data.map(c => c.id);
+      expect(ids).toContain(oldOpenA.id);
+      expect(ids).toContain(recentOpenB.id);
+      expect(ids).not.toContain(recentOpenA.id);
+    });
+  });
 });

@@ -522,10 +522,10 @@ export class TestFactories {
     projectId: string,
     overrides: {
       name?: string;
-      filters?: Array<{field: string; operator: string; value?: unknown; unit?: string}>;
+      filters?: Array<{field: string; operator: string; value?: unknown; unit?: string; templateId?: string}>;
       condition?: {
         logic: 'AND' | 'OR';
-        groups: Array<{filters: Array<{field: string; operator: string; value?: unknown; unit?: string}>}>;
+        groups: Array<{filters: Array<{field: string; operator: string; value?: unknown; unit?: string; templateId?: string}>}>;
       };
       trackMembership?: boolean;
     } = {},

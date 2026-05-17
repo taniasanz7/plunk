@@ -141,6 +141,9 @@ const segmentFilterSchema = z.object({
   ]),
   value: z.any().optional(),
   unit: z.enum(['days', 'hours', 'minutes']).optional(),
+  // Optional scoping for email.* activity filters. Empty/omitted means
+  // "any template". When present, only emails with this templateId count.
+  templateId: z.string().uuid().optional(),
 });
 
 const filterGroupSchema: z.ZodType<FilterGroup> = z.lazy(() =>

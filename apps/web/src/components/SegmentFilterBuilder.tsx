@@ -16,6 +16,7 @@ import type {FilterCondition, FilterGroup, SegmentFilter, SegmentFilterOperator}
 import {Check, ChevronsUpDown, GripVertical, Plus, Search, Trash2} from 'lucide-react';
 import {memo, useCallback, useEffect, useMemo, useState} from 'react';
 import {network} from '../lib/network';
+import {TemplateSearchPicker} from './TemplateSearchPicker';
 
 const STANDARD_OPERATORS: {value: SegmentFilterOperator; label: string; description: string}[] = [
   {value: 'equals', label: 'Equals', description: 'Exact match'},
@@ -99,17 +100,19 @@ function useAvailableOptions(currentSegmentId?: string) {
         const eventOptions: FieldOption[] = [];
         const emailOptions: FieldOption[] = [];
 
+        // Hardcoded email-activity fields. /events/names only returns events
+        // that have actually been fired, so without these defaults segments
+        // referencing email.* activity can't be edited until production
+        // traffic emits the first matching event. The set mirrors the
+        // activities supported by SegmentService.buildEmailActivityCondition's
+        // fieldMap, using the singular forms that Plunk's webhook handler
+        // actually emits (email.open / email.click / etc.).
+        const KNOWN_EMAIL_ACTIVITIES = ['open', 'click', 'bounce', 'complaint', 'sent', 'delivery'] as const;
+        const emailFieldNames = new Set<string>(KNOWN_EMAIL_ACTIVITIES.map(a => `email.${a}`));
+
         (eventsData.eventNames || []).forEach((name: string) => {
           if (name.startsWith('email.')) {
-            emailOptions.push({
-              value: name,
-              label: name
-                .replace('email.', '')
-                .replace(/([A-Z])/g, ' $1')
-                .trim(),
-              type: 'event' as const,
-              category: 'Email Activity' as const,
-            });
+            emailFieldNames.add(name);
           } else {
             // Ensure event has the 'event.' prefix for backend compatibility
             const eventValue = name.startsWith('event.') ? name : `event.${name}`;
@@ -121,6 +124,22 @@ function useAvailableOptions(currentSegmentId?: string) {
             });
           }
         });
+
+        // Materialize email-activity options from the merged set (hardcoded
+        // defaults + any emergent email.* event names from /events/names).
+        Array.from(emailFieldNames)
+          .sort()
+          .forEach(name => {
+            emailOptions.push({
+              value: name,
+              label: name
+                .replace('email.', '')
+                .replace(/([A-Z])/g, ' $1')
+                .trim(),
+              type: 'event' as const,
+              category: 'Email Activity' as const,
+            });
+          });
 
         // Build segment options, excluding the current segment to prevent self-reference
         const segmentOptions: FieldOption[] = (segmentsData || [])
@@ -323,17 +342,22 @@ const FilterRow = memo(function FilterRow({filter, onChange, onRemove, available
         }
       }
 
+      // Drop templateId when leaving an email.* field (it only applies there)
+      const isNewEmailActivity = value.startsWith('email.');
+      const nextTemplateId = isNewEmailActivity ? filter.templateId : undefined;
+
       onChange({
         field: value,
         operator: newOperator,
         value: newValue,
         unit: newUnit,
+        templateId: nextTemplateId,
       });
 
       setOpen(false);
       setSearch('');
     },
-    [availableFields, filter.operator, filter.value, filter.unit, fieldType, onChange, getDefaultValueForType, getOperatorsForType],
+    [availableFields, filter.operator, filter.value, filter.unit, filter.templateId, fieldType, onChange, getDefaultValueForType, getOperatorsForType],
   );
 
   // Get label for selected field
@@ -373,204 +397,222 @@ const FilterRow = memo(function FilterRow({filter, onChange, onRemove, available
 
   return (
     <div className="flex items-start gap-2 p-3 bg-neutral-50 rounded-lg border border-neutral-200">
-      <div className="flex-1 grid grid-cols-3 gap-3">
-        {/* Field Selection */}
-        <div className="space-y-1.5">
-          <Label className="text-xs text-neutral-600">Field</Label>
-          <Popover open={open} onOpenChange={setOpen}>
-            <PopoverTrigger asChild>
-              <Button
-                variant="outline"
-                role="combobox"
-                aria-expanded={open}
-                className="w-full justify-between text-sm font-normal"
-              >
-                <span className="truncate">{getFieldLabel()}</span>
-                <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent className="w-[350px] p-0" align="start">
-              <div className="flex items-center border-b px-3 py-2">
-                <Search className="mr-2 h-4 w-4 shrink-0 opacity-50" />
-                <Input
-                  placeholder="Search fields, events, or email activity..."
-                  value={search}
-                  onChange={e => setSearch(e.target.value)}
-                  className="border-0 p-0 focus-visible:ring-0 focus-visible:ring-offset-0"
-                />
-              </div>
-              <div className="max-h-[300px] overflow-y-auto p-1">
-                {Object.keys(filteredGroups).length === 0 ? (
-                  <div className="py-6 text-center text-sm text-neutral-500">No fields or events found.</div>
-                ) : (
-                  Object.entries(filteredGroups).map(([category, fields]) => (
-                    <div key={category} className="py-1">
-                      <div className="px-2 py-1.5 text-xs font-semibold text-neutral-500">{category}</div>
-                      {fields.map(field => (
-                        <button
-                          key={field.value}
-                          onClick={() => handleFieldChange(field.value)}
-                          className="w-full flex items-center rounded-sm px-2 py-1.5 text-sm hover:bg-neutral-100 cursor-pointer text-left"
-                        >
-                          <Check
-                            className={`mr-2 h-4 w-4 ${filter.field === field.value ? 'opacity-100' : 'opacity-0'}`}
-                          />
-                          <div className="flex flex-col flex-1">
-                            <div className="flex items-center gap-2">
-                              <span className="text-neutral-900">{field.label}</span>
-                              <span className="text-xs px-1.5 py-0.5 rounded bg-neutral-100 text-neutral-600 font-mono">
-                                {field.type}
-                              </span>
+      <div className="flex-1 space-y-3">
+        <div className="grid grid-cols-3 gap-3">
+          {/* Field Selection */}
+          <div className="space-y-1.5">
+            <Label className="text-xs text-neutral-600">Field</Label>
+            <Popover open={open} onOpenChange={setOpen}>
+              <PopoverTrigger asChild>
+                <Button
+                  variant="outline"
+                  role="combobox"
+                  aria-expanded={open}
+                  className="w-full justify-between text-sm font-normal"
+                >
+                  <span className="truncate">{getFieldLabel()}</span>
+                  <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-[350px] p-0" align="start">
+                <div className="flex items-center border-b px-3 py-2">
+                  <Search className="mr-2 h-4 w-4 shrink-0 opacity-50" />
+                  <Input
+                    placeholder="Search fields, events, or email activity..."
+                    value={search}
+                    onChange={e => setSearch(e.target.value)}
+                    className="border-0 p-0 focus-visible:ring-0 focus-visible:ring-offset-0"
+                  />
+                </div>
+                <div className="max-h-[300px] overflow-y-auto p-1">
+                  {Object.keys(filteredGroups).length === 0 ? (
+                    <div className="py-6 text-center text-sm text-neutral-500">No fields or events found.</div>
+                  ) : (
+                    Object.entries(filteredGroups).map(([category, fields]) => (
+                      <div key={category} className="py-1">
+                        <div className="px-2 py-1.5 text-xs font-semibold text-neutral-500">{category}</div>
+                        {fields.map(field => (
+                          <button
+                            key={field.value}
+                            onClick={() => handleFieldChange(field.value)}
+                            className="w-full flex items-center rounded-sm px-2 py-1.5 text-sm hover:bg-neutral-100 cursor-pointer text-left"
+                          >
+                            <Check
+                              className={`mr-2 h-4 w-4 ${filter.field === field.value ? 'opacity-100' : 'opacity-0'}`}
+                            />
+                            <div className="flex flex-col flex-1">
+                              <div className="flex items-center gap-2">
+                                <span className="text-neutral-900">{field.label}</span>
+                                <span className="text-xs px-1.5 py-0.5 rounded bg-neutral-100 text-neutral-600 font-mono">
+                                  {field.type}
+                                </span>
+                              </div>
+                              {field.description ? (
+                                <span className="text-xs text-neutral-500">{field.description}</span>
+                              ) : field.value !== field.label ? (
+                                <span className="text-xs text-neutral-500">{field.value}</span>
+                              ) : null}
                             </div>
-                            {field.description ? (
-                              <span className="text-xs text-neutral-500">{field.description}</span>
-                            ) : field.value !== field.label ? (
-                              <span className="text-xs text-neutral-500">{field.value}</span>
-                            ) : null}
-                          </div>
-                        </button>
-                      ))}
-                    </div>
-                  ))
-                )}
-              </div>
-            </PopoverContent>
-          </Popover>
-        </div>
+                          </button>
+                        ))}
+                      </div>
+                    ))
+                  )}
+                </div>
+              </PopoverContent>
+            </Popover>
+          </div>
 
-        {/* Operator Selection */}
-        <div className="space-y-1.5">
-          <Label className="text-xs text-neutral-600">Operator</Label>
-          <Select
-            value={filter.operator}
-            onValueChange={(v: SegmentFilterOperator) => {
-              const newOperator = v;
-              const oldOperator = filter.operator;
-
-              // Check if we're switching between operators that need different value types
-              const noValueOperators = ['exists', 'notExists', 'triggered', 'notTriggered', 'memberOfSegment', 'notMemberOfSegment'];
-              const oldNeedsValue = !noValueOperators.includes(oldOperator);
-              const newNeedsValue = !noValueOperators.includes(newOperator);
-              const oldNeedsUnit = ['within', 'triggeredWithin', 'olderThan', 'triggeredOlderThan', 'notTriggeredWithin'].includes(
-                oldOperator,
-              );
-              const newNeedsUnit = ['within', 'triggeredWithin', 'olderThan', 'triggeredOlderThan', 'notTriggeredWithin'].includes(
-                newOperator,
-              );
-
-              const updatedFilter: SegmentFilter = {...filter, operator: newOperator};
-
-              // Clear value if new operator doesn't need one
-              if (!newNeedsValue && oldNeedsValue) {
-                updatedFilter.value = undefined;
-              }
-
-              // Clear or set unit appropriately
-              if (!newNeedsUnit && oldNeedsUnit) {
-                updatedFilter.unit = undefined;
-              } else if (newNeedsUnit && !oldNeedsUnit) {
-                updatedFilter.unit = 'days';
-                updatedFilter.value = typeof updatedFilter.value === 'number' && updatedFilter.value > 0 ? updatedFilter.value : 7;
-              }
-
-              // If switching to an operator that needs a value but we don't have one, set default
-              // Skip when entering a unit-based operator — it already set the value above
-              if (newNeedsValue && !oldNeedsValue && !newNeedsUnit) {
-                updatedFilter.value = getDefaultValueForType(fieldType);
-              }
-
-              onChange(updatedFilter);
-            }}
-          >
-            <SelectTrigger className="text-sm h-9">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {operators.map(op => (
-                <SelectItemWithDescription
-                  key={op.value}
-                  value={op.value}
-                  title={op.label}
-                  description={op.description}
-                />
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-
-        {/* Value Input */}
-        <div className="space-y-1.5">
-          <Label className="text-xs text-neutral-600">Value</Label>
-          {!needsValue ? (
-            <div className="h-9 flex items-center text-sm text-neutral-400 px-3 bg-neutral-100 rounded border border-neutral-200">
-              No value needed
-            </div>
-          ) : needsUnit ? (
-            <div className="flex gap-1">
-              <Input
-                type="number"
-                value={filter.value as number}
-                onChange={e => onChange({...filter, value: parseInt(e.target.value) || 0})}
-                className="text-sm flex-1 bg-white"
-                min="1"
-              />
-              <Select
-                value={filter.unit || 'days'}
-                onValueChange={(v: 'days' | 'hours' | 'minutes') => onChange({...filter, unit: v})}
-              >
-                <SelectTrigger className="text-sm h-9 w-[110px] bg-white">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {TIME_UNITS.map(unit => (
-                    <SelectItem key={unit.value} value={unit.value}>
-                      {unit.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          ) : fieldType === 'boolean' ? (
+          {/* Operator Selection */}
+          <div className="space-y-1.5">
+            <Label className="text-xs text-neutral-600">Operator</Label>
             <Select
-              value={String(filter.value ?? 'true')}
-              onValueChange={v => onChange({...filter, value: v === 'true'})}
+              value={filter.operator}
+              onValueChange={(v: SegmentFilterOperator) => {
+                const newOperator = v;
+                const oldOperator = filter.operator;
+
+                // Check if we're switching between operators that need different value types
+                const noValueOperators = ['exists', 'notExists', 'triggered', 'notTriggered', 'memberOfSegment', 'notMemberOfSegment'];
+                const oldNeedsValue = !noValueOperators.includes(oldOperator);
+                const newNeedsValue = !noValueOperators.includes(newOperator);
+                const oldNeedsUnit = ['within', 'triggeredWithin', 'olderThan', 'triggeredOlderThan', 'notTriggeredWithin'].includes(
+                  oldOperator,
+                );
+                const newNeedsUnit = ['within', 'triggeredWithin', 'olderThan', 'triggeredOlderThan', 'notTriggeredWithin'].includes(
+                  newOperator,
+                );
+
+                const updatedFilter: SegmentFilter = {...filter, operator: newOperator};
+
+                // Clear value if new operator doesn't need one
+                if (!newNeedsValue && oldNeedsValue) {
+                  updatedFilter.value = undefined;
+                }
+
+                // Clear or set unit appropriately
+                if (!newNeedsUnit && oldNeedsUnit) {
+                  updatedFilter.unit = undefined;
+                } else if (newNeedsUnit && !oldNeedsUnit) {
+                  updatedFilter.unit = 'days';
+                  updatedFilter.value = typeof updatedFilter.value === 'number' && updatedFilter.value > 0 ? updatedFilter.value : 7;
+                }
+
+                // If switching to an operator that needs a value but we don't have one, set default
+                // Skip when entering a unit-based operator — it already set the value above
+                if (newNeedsValue && !oldNeedsValue && !newNeedsUnit) {
+                  updatedFilter.value = getDefaultValueForType(fieldType);
+                }
+
+                onChange(updatedFilter);
+              }}
             >
-              <SelectTrigger className="text-sm h-9 bg-white">
+              <SelectTrigger className="text-sm h-9">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="true">True</SelectItem>
-                <SelectItem value="false">False</SelectItem>
+                {operators.map(op => (
+                  <SelectItemWithDescription
+                    key={op.value}
+                    value={op.value}
+                    title={op.label}
+                    description={op.description}
+                  />
+                ))}
               </SelectContent>
             </Select>
-          ) : fieldType === 'number' ? (
-            <Input
-              type="number"
-              value={typeof filter.value === 'number' ? filter.value : ''}
-              onChange={e => {
-                const val = e.target.value;
-                onChange({...filter, value: val === '' ? 0 : parseFloat(val) || 0});
-              }}
-              className="text-sm bg-white"
-              placeholder="Enter number"
-            />
-          ) : fieldType === 'date' ? (
-            <Input
-              type="date"
-              value={filter.value ? String(filter.value).split('T')[0] : ''}
-              onChange={e => onChange({...filter, value: e.target.value})}
-              className="text-sm bg-white"
-            />
-          ) : (
-            <Input
-              type="text"
-              value={String(filter.value ?? '')}
-              onChange={e => onChange({...filter, value: e.target.value})}
-              className="text-sm bg-white"
-              placeholder="Enter value"
-            />
-          )}
+          </div>
+
+          {/* Value Input */}
+          <div className="space-y-1.5">
+            <Label className="text-xs text-neutral-600">Value</Label>
+            {!needsValue ? (
+              <div className="h-9 flex items-center text-sm text-neutral-400 px-3 bg-neutral-100 rounded border border-neutral-200">
+                No value needed
+              </div>
+            ) : needsUnit ? (
+              <div className="flex gap-1">
+                <Input
+                  type="number"
+                  value={filter.value as number}
+                  onChange={e => onChange({...filter, value: parseInt(e.target.value) || 0})}
+                  className="text-sm flex-1 bg-white"
+                  min="1"
+                />
+                <Select
+                  value={filter.unit || 'days'}
+                  onValueChange={(v: 'days' | 'hours' | 'minutes') => onChange({...filter, unit: v})}
+                >
+                  <SelectTrigger className="text-sm h-9 w-[110px] bg-white">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {TIME_UNITS.map(unit => (
+                      <SelectItem key={unit.value} value={unit.value}>
+                        {unit.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            ) : fieldType === 'boolean' ? (
+              <Select
+                value={String(filter.value ?? 'true')}
+                onValueChange={v => onChange({...filter, value: v === 'true'})}
+              >
+                <SelectTrigger className="text-sm h-9 bg-white">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="true">True</SelectItem>
+                  <SelectItem value="false">False</SelectItem>
+                </SelectContent>
+              </Select>
+            ) : fieldType === 'number' ? (
+              <Input
+                type="number"
+                value={typeof filter.value === 'number' ? filter.value : ''}
+                onChange={e => {
+                  const val = e.target.value;
+                  onChange({...filter, value: val === '' ? 0 : parseFloat(val) || 0});
+                }}
+                className="text-sm bg-white"
+                placeholder="Enter number"
+              />
+            ) : fieldType === 'date' ? (
+              <Input
+                type="date"
+                value={filter.value ? String(filter.value).split('T')[0] : ''}
+                onChange={e => onChange({...filter, value: e.target.value})}
+                className="text-sm bg-white"
+              />
+            ) : (
+              <Input
+                type="text"
+                value={String(filter.value ?? '')}
+                onChange={e => onChange({...filter, value: e.target.value})}
+                className="text-sm bg-white"
+                placeholder="Enter value"
+              />
+            )}
+          </div>
         </div>
+
+        {/* Template scoping (email.* activity fields only) */}
+        {filter.field.startsWith('email.') && (
+          <div className="space-y-1.5">
+            <Label className="text-xs text-neutral-600">Template (optional)</Label>
+            <TemplateSearchPicker
+              value={filter.templateId ?? ''}
+              onChange={id =>
+                onChange({...filter, templateId: id && id.length > 0 ? id : undefined})
+              }
+            />
+            <p className="text-xs text-neutral-500">
+              Leave blank to match any template.
+            </p>
+          </div>
+        )}
       </div>
 
       <Button type="button" variant="destructiveGhost" size="sm" onClick={onRemove} className="mt-6">

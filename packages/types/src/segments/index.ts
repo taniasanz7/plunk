@@ -36,6 +36,13 @@ export interface SegmentFilter {
   operator: SegmentFilterOperator;
   value?: any;
   unit?: 'days' | 'hours' | 'minutes';
+  /**
+   * Optional scoping to a specific email template. Only meaningful when
+   * `field` starts with `email.` (e.g. `email.opened`, `email.clicked`).
+   * When present, the activity-based where clause filters to emails with
+   * the given templateId; otherwise, any email matches.
+   */
+  templateId?: string;
 }
 
 export interface FilterGroup {

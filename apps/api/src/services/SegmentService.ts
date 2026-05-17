@@ -693,7 +693,7 @@ export class SegmentService {
     // Handle email activity filters (e.g., "email.opened", "email.clicked")
     if (field.startsWith('email.')) {
       const activity = field.substring(6); // Remove "email." prefix
-      return this.buildEmailActivityCondition(activity, operator, value, unit);
+      return this.buildEmailActivityCondition(activity, operator, value, unit, filter.templateId);
     }
 
     // Handle JSON field paths (e.g., "data.plan")
@@ -1294,12 +1294,17 @@ export class SegmentService {
   /**
    * Build condition for email activity filters
    * Uses Prisma relations to efficiently query contacts based on email engagement
+   *
+   * When `templateId` is provided, the activity is scoped to emails sent from
+   * that template (e.g. "opened template X", "never clicked template X").
+   * When omitted, any email matches (existing behavior).
    */
   private static buildEmailActivityCondition(
     activity: string,
     operator: string,
     value: unknown,
     unit?: 'days' | 'hours' | 'minutes',
+    templateId?: string,
   ): Prisma.ContactWhereInput {
     // Map activity names to Email model fields (accept both verb and past-tense forms)
     const fieldMap: Record<string, string> = {
@@ -1321,16 +1326,21 @@ export class SegmentService {
       throw new HttpException(400, `Unsupported email activity: ${activity}`);
     }
 
+    // Merge optional templateId into each `emails: {some|none: {...}}` clause.
+    // No templateId → existing behavior (any email matches).
+    const emailFilter = (extra: Prisma.EmailWhereInput): Prisma.EmailWhereInput =>
+      templateId ? {...extra, templateId} : extra;
+
     switch (operator) {
       case 'triggered':
         // Contact has this email activity at any time
         return {
           emails: {
-            some: {
+            some: emailFilter({
               [field]: {
                 not: null,
               },
-            },
+            }),
           },
         };
 
@@ -1346,11 +1356,11 @@ export class SegmentService {
 
         return {
           emails: {
-            some: {
+            some: emailFilter({
               [field]: {
                 gte: since,
               },
-            },
+            }),
           },
         };
       }
@@ -1367,24 +1377,24 @@ export class SegmentService {
 
         return {
           AND: [
-            // Must have the email activity at some point
+            // Must have the email activity at some point (scoped to templateId if set)
             {
               emails: {
-                some: {
+                some: emailFilter({
                   [field]: {
                     not: null,
                   },
-                },
+                }),
               },
             },
-            // But NOT within the recent timeframe
+            // But NOT within the recent timeframe (also scoped to templateId)
             {
               emails: {
-                none: {
+                none: emailFilter({
                   [field]: {
                     gte: before,
                   },
-                },
+                }),
               },
             },
           ],
@@ -1395,11 +1405,11 @@ export class SegmentService {
         // Contact has never had this email activity
         return {
           emails: {
-            none: {
+            none: emailFilter({
               [field]: {
                 not: null,
               },
-            },
+            }),
           },
         };
 
@@ -1415,11 +1425,11 @@ export class SegmentService {
 
         return {
           emails: {
-            none: {
+            none: emailFilter({
               [field]: {
                 gte: since,
               },
-            },
+            }),
           },
         };
       }
