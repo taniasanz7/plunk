@@ -66,15 +66,14 @@ export class ActivityService {
     // We fetch limit items from each, then take top limit after sorting
     const fetchLimit = effectiveLimit;
 
-    // Default date range to last 30 days if not specified
-    // IMPORTANT: When cursor is provided (pagination), we should NOT apply the gte constraint
-    // to allow users to paginate back beyond the initial date range
-    const now = new Date();
-    const defaultStartDate = new Date(now.getTime() - this.DEFAULT_DAYS_BACK * 24 * 60 * 60 * 1000);
+    // When cursor is provided (pagination), we should NOT apply the gte constraint
+    // to allow users to paginate back beyond the initial date range.
+    // When startDate is undefined ("all time"), also omit the gte constraint so the
+    // caller gets the project's full history. The frontend's date-range dropdown
+    // computes startDate explicitly for bounded ranges and omits it for "All time";
+    // applying a silent default here would override that choice.
     const dateFilter: Prisma.DateTimeFilter = {
-      // Only apply start date filter on initial load (no cursor)
-      // This allows pagination to go back indefinitely
-      ...(cursor ? {} : {gte: startDate || defaultStartDate}),
+      ...(cursor || !startDate ? {} : {gte: startDate}),
       ...(endDate ? {lte: endDate} : {}),
     };
 

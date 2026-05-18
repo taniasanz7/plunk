@@ -20,8 +20,12 @@ export function ActivityFeed({typeFilter, dateRangeDays = 30, contactId}: Activi
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Memoize start date to prevent recreation on every render
+  // Memoize start date to prevent recreation on every render.
+  // dateRangeDays <= 0 is interpreted as "all time": no startDate filter is sent,
+  // so the API returns activities regardless of how old they are. This matters for
+  // self-hosted projects with historical data imported from other systems.
   const startDate = useMemo(() => {
+    if (dateRangeDays <= 0) return undefined;
     const date = new Date();
     date.setDate(date.getDate() - dateRangeDays);
     return date.toISOString();
@@ -45,9 +49,11 @@ export function ActivityFeed({typeFilter, dateRangeDays = 30, contactId}: Activi
           limit: '20', // Conservative limit to avoid overloading
         });
 
-        // Only apply startDate filter on initial load, not during pagination
-        // When cursor is present, we're paginating backwards and should not limit by startDate
-        if (!cursor) {
+        // Only apply startDate filter on initial load, not during pagination.
+        // When cursor is present, we're paginating backwards and should not limit by startDate.
+        // When startDate is undefined (dateRangeDays <= 0, "all time"), don't send it at all
+        // so the API returns the project's full history.
+        if (!cursor && startDate) {
           params.set('startDate', startDate);
         }
 
@@ -106,9 +112,13 @@ export function ActivityFeed({typeFilter, dateRangeDays = 30, contactId}: Activi
         return;
       }
 
+      // Upcoming activities are always forward-looking. When dateRangeDays <= 0
+      // ("all time" for past activity), use the API's maximum future window (90 days)
+      // since "all time in the future" isn't meaningful.
+      const daysAhead = dateRangeDays > 0 ? dateRangeDays : 90;
       const params = new URLSearchParams({
         limit: '20',
-        daysAhead: dateRangeDays.toString(),
+        daysAhead: daysAhead.toString(),
       });
 
       const result = await network.fetch<{activities: Activity[]}>('GET', `/activity/upcoming?${params.toString()}`);

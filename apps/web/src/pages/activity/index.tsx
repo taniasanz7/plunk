@@ -143,6 +143,7 @@ export default function ActivityPage() {
                       <SelectItem value="7">Last 7 days</SelectItem>
                       <SelectItem value="30">Last 30 days</SelectItem>
                       <SelectItem value="90">Last 90 days</SelectItem>
+                      <SelectItem value="0">All time</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>

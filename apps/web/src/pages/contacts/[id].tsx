@@ -203,7 +203,11 @@ export default function ContactDetailPage() {
                   <CardTitle>Activity</CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <ActivityFeed contactId={id as string} />
+                  {/* Show the contact's full history by default. A contact-detail
+                      page is intrinsically a history view — restricting it to the
+                      last 30 days hides historical email/event records that the
+                      user came here to find. */}
+                  <ActivityFeed contactId={id as string} dateRangeDays={0} />
                 </CardContent>
               </Card>
             </div>
