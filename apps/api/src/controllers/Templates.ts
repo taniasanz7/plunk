@@ -87,7 +87,7 @@ export class Templates {
   @CatchAsync
   public async create(req: Request, res: Response, _next: NextFunction) {
     const auth = res.locals.auth;
-    const {name, description, subject, body, from, fromName, replyTo, type, tags} = req.body;
+    const {name, description, subject, body, from, fromName, replyTo, type, tags, layoutId} = req.body;
 
     if (!name) {
       return res.status(400).json({error: 'Name is required'});
@@ -118,6 +118,7 @@ export class Templates {
       replyTo,
       type,
       tags,
+      layoutId,
     });
 
     return res.status(201).json(template);
@@ -133,7 +134,7 @@ export class Templates {
   public async update(req: Request, res: Response, _next: NextFunction) {
     const auth = res.locals.auth;
     const templateId = req.params.id;
-    const {name, description, subject, body, from, fromName, replyTo, type, tags} = req.body;
+    const {name, description, subject, body, from, fromName, replyTo, type, tags, layoutId} = req.body;
 
     if (!templateId) {
       return res.status(400).json({error: 'Template ID is required'});
@@ -154,6 +155,7 @@ export class Templates {
       replyTo,
       type,
       tags,
+      layoutId,
     });
 
     return res.status(200).json(template);

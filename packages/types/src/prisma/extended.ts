@@ -10,9 +10,21 @@ import type {
   WorkflowStepExecution,
   WorkflowTransition,
   Template,
+  Layout,
   Contact,
   Prisma,
 } from '@plunk/db';
+
+/**
+ * Layout (master template) with a computed count of templates referencing it.
+ * Powers the "Used by" column on the layouts list view; the count is the
+ * number of templates whose `layoutId` points at this layout.
+ */
+export interface LayoutWithUsage extends Layout {
+  _count: {
+    templates: number;
+  };
+}
 
 /**
  * Workflow with all steps, transitions, and template details

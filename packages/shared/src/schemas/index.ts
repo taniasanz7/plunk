@@ -197,6 +197,7 @@ export const TemplateSchemas = {
     replyTo: email.nullish(),
     type: z.nativeEnum(TemplateType).default('MARKETING'),
     tags: tagsArray.optional(),
+    layoutId: uuid.nullish(),
   }),
   update: z.object({
     name: z.string().min(1).max(100).optional(),
@@ -208,6 +209,7 @@ export const TemplateSchemas = {
     replyTo: email.nullish(),
     type: z.nativeEnum(TemplateType).optional(),
     tags: tagsArray.optional(),
+    layoutId: uuid.nullish(),
   }),
   // Bulk operation payload for POST /templates/bulk-update.
   //
@@ -222,6 +224,19 @@ export const TemplateSchemas = {
     delete: z.boolean().optional(),
     addTags: tagsArray.optional(),
     removeTags: tagsArray.optional(),
+  }),
+};
+
+export const LayoutSchemas = {
+  create: z.object({
+    name: z.string().min(1).max(100),
+    body: z.string().min(1),
+    isDefault: z.boolean().optional(),
+  }),
+  update: z.object({
+    name: z.string().min(1).max(100).optional(),
+    body: z.string().min(1).optional(),
+    isDefault: z.boolean().optional(),
   }),
 };
 

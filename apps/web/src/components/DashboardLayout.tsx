@@ -11,6 +11,7 @@ import {
   FileText,
   Layers,
   LayoutDashboard,
+  LayoutPanelTop,
   LogOut,
   Megaphone,
   Menu,
@@ -53,6 +54,7 @@ const navigation: NavSection[] = [
     title: 'Automations',
     items: [
       {name: 'Templates', href: '/templates', icon: FileText},
+      {name: 'Layouts', href: '/layouts', icon: LayoutPanelTop},
       {name: 'Workflows', href: '/workflows', icon: Workflow},
     ],
   },

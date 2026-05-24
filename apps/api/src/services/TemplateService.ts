@@ -115,8 +115,13 @@ export class TemplateService {
       replyTo?: string | null;
       type?: Template['type'];
       tags?: string[];
+      layoutId?: string | null;
     },
   ): Promise<Template> {
+    if (data.layoutId) {
+      await this.assertLayoutBelongsToProject(projectId, data.layoutId);
+    }
+
     return prisma.template.create({
       data: {
         projectId,
@@ -129,8 +134,25 @@ export class TemplateService {
         replyTo: data.replyTo,
         type: data.type ?? 'MARKETING',
         tags: normalizeTags(data.tags) ?? [],
+        layoutId: data.layoutId ?? null,
       },
     });
+  }
+
+  /**
+   * Verify that a given layoutId exists and belongs to the same project as
+   * the template being created/updated. Prevents callers from referencing
+   * a layout from a different project.
+   */
+  private static async assertLayoutBelongsToProject(projectId: string, layoutId: string): Promise<void> {
+    const layout = await prisma.layout.findFirst({
+      where: {id: layoutId, projectId},
+      select: {id: true},
+    });
+
+    if (!layout) {
+      throw new HttpException(400, 'Layout not found or does not belong to this project');
+    }
   }
 
   /**
@@ -149,10 +171,15 @@ export class TemplateService {
       replyTo?: string | null;
       type?: Template['type'];
       tags?: string[];
+      layoutId?: string | null;
     },
   ): Promise<Template> {
     // Verify template exists and belongs to project
     await this.get(projectId, templateId);
+
+    if (data.layoutId) {
+      await this.assertLayoutBelongsToProject(projectId, data.layoutId);
+    }
 
     const normalizedTags = normalizeTags(data.tags);
 
@@ -160,6 +187,7 @@ export class TemplateService {
       ...buildEmailFieldsUpdate(data),
       ...(data.type !== undefined ? {type: data.type} : {}),
       ...(normalizedTags !== undefined ? {tags: {set: normalizedTags}} : {}),
+      ...(data.layoutId !== undefined ? {layoutId: data.layoutId} : {}),
     } as Prisma.TemplateUpdateInput;
 
     return prisma.template.update({
@@ -335,6 +363,7 @@ export class TemplateService {
         replyTo: template.replyTo,
         type: template.type,
         tags: template.tags,
+        layoutId: template.layoutId,
       },
     });
   }

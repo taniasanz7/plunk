@@ -9,9 +9,15 @@ import {
   IconSpinner,
   Input,
   Label,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
   StickySaveBar,
 } from '@plunk/ui';
-import type {Template} from '@plunk/db';
+import type {Layout, Template} from '@plunk/db';
+import type {PaginatedResponse} from '@plunk/types';
 import {DashboardLayout} from '../../components/DashboardLayout';
 import {EmailSettings} from '../../components/EmailSettings';
 import {EmailEditor} from '../../components/EmailEditor';
@@ -28,6 +34,8 @@ import useSWR from 'swr';
 import {TemplateSchemas, detectUnsubscribeSignal} from '@plunk/shared';
 import {useActiveProject} from '../../lib/contexts/ActiveProjectProvider';
 
+const LAYOUT_NONE = '__none__';
+
 export default function TemplateEditorPage() {
   const router = useRouter();
   const {id} = router.query;
@@ -36,6 +44,13 @@ export default function TemplateEditorPage() {
   const {data: template, mutate} = useSWR<Template>(id ? `/templates/${id}` : null, {
     revalidateOnFocus: false,
   });
+
+  // Fetch available layouts (small list — assume <100). Default layout floats first.
+  const {data: layoutsResponse} = useSWR<PaginatedResponse<Layout>>('/layouts?pageSize=100', {
+    revalidateOnFocus: false,
+  });
+  const layouts = useMemo(() => layoutsResponse?.data ?? [], [layoutsResponse?.data]);
+  const defaultLayout = useMemo(() => layouts.find(l => l.isDefault) ?? null, [layouts]);
 
   const [editedTemplate, setEditedTemplate] = useState<Partial<Template>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -54,9 +69,20 @@ export default function TemplateEditorPage() {
         replyTo: template.replyTo || '',
         type: template.type,
         tags: template.tags ?? [],
+        layoutId: template.layoutId ?? null,
       });
     }
   }, [template, editedTemplate]);
+
+  // The effective layout used at send time: explicit pick wins; otherwise the
+  // project default (if any); otherwise none. Used to render the preview pane.
+  const effectiveLayoutBody = useMemo(() => {
+    const explicitId = editedTemplate.layoutId ?? null;
+    if (explicitId) {
+      return layouts.find(l => l.id === explicitId)?.body ?? null;
+    }
+    return defaultLayout?.body ?? null;
+  }, [editedTemplate.layoutId, layouts, defaultLayout]);
 
   const hasChanges = useMemo(() => {
     if (!template || Object.keys(editedTemplate).length === 0) return false;
@@ -73,7 +99,8 @@ export default function TemplateEditorPage() {
       (editedTemplate.fromName || '') !== (template.fromName || '') ||
       (editedTemplate.replyTo || '') !== (template.replyTo || '') ||
       editedTemplate.type !== template.type ||
-      tagsChanged
+      tagsChanged ||
+      (editedTemplate.layoutId ?? null) !== (template.layoutId ?? null)
     );
   }, [editedTemplate, template]);
 
@@ -95,6 +122,7 @@ export default function TemplateEditorPage() {
         replyTo: editedTemplate.replyTo || null,
         type: editedTemplate.type,
         tags: editedTemplate.tags ?? [],
+        layoutId: editedTemplate.layoutId ?? null,
       });
 
       // Silent save - no toast notification
@@ -219,7 +247,7 @@ export default function TemplateEditorPage() {
                     </button>
                   ))}
                 </div>
-                {editedTemplate.type === 'HEADLESS' && !detectUnsubscribeSignal(editedTemplate.body ?? '') && (
+                {editedTemplate.type === 'HEADLESS' && !detectUnsubscribeSignal(editedTemplate.body ?? '', effectiveLayoutBody) && (
                   <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 overflow-hidden">
                     <div className="flex items-center gap-2 border-b border-amber-200 bg-amber-100/60 px-3 py-2">
                       <TriangleAlert className="h-3.5 w-3.5 text-amber-600 shrink-0" />
@@ -276,6 +304,40 @@ export default function TemplateEditorPage() {
             </CardContent>
           </Card>
 
+          {/* Layout (master template) */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Layout</CardTitle>
+              <CardDescription>
+                Wrap this template&apos;s body inside a reusable master template. Select &quot;None / default&quot;
+                to use the project default (if any), or pick a specific layout.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Select
+                value={editedTemplate.layoutId ?? LAYOUT_NONE}
+                onValueChange={value =>
+                  setEditedTemplate({...editedTemplate, layoutId: value === LAYOUT_NONE ? null : value})
+                }
+              >
+                <SelectTrigger id="layout">
+                  <SelectValue placeholder="None / default" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={LAYOUT_NONE}>
+                    None / default{defaultLayout ? ` (${defaultLayout.name})` : ''}
+                  </SelectItem>
+                  {layouts.map(layout => (
+                    <SelectItem key={layout.id} value={layout.id}>
+                      {layout.name}
+                      {layout.isDefault ? ' (default)' : ''}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </CardContent>
+          </Card>
+
           {/* Email Body */}
           <Card className="overflow-visible">
             <CardHeader>
@@ -286,6 +348,7 @@ export default function TemplateEditorPage() {
               <EmailEditor
                 value={editedTemplate.body || ''}
                 onChange={body => setEditedTemplate({...editedTemplate, body})}
+                layoutBody={effectiveLayoutBody}
               />
             </CardContent>
           </Card>
