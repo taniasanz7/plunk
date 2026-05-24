@@ -7,6 +7,7 @@ import signale from 'signale';
 import {prisma} from '../database/prisma.js';
 import {HttpException} from '../exceptions/index.js';
 import type {ListSort} from '../utils/listSort.js';
+import {normalizeTags} from '../utils/tags.js';
 
 import {ContactService} from './ContactService.js';
 import {EventService} from './EventService.js';
@@ -24,6 +25,7 @@ export class WorkflowService {
     search?: string,
     sort: ListSort = {field: 'createdAt', direction: 'desc'},
     enabled?: boolean,
+    tag?: string,
   ): Promise<PaginatedResponse<Workflow>> {
     const skip = (page - 1) * pageSize;
 
@@ -32,6 +34,7 @@ export class WorkflowService {
       // Status facet (Active / Disabled). Undefined = no filter; the
       // `@@index([projectId, enabled])` covers this predicate.
       ...(enabled !== undefined ? {enabled} : {}),
+      ...(tag ? {tags: {has: tag}} : {}),
       ...(search
         ? {
             OR: [
@@ -78,6 +81,26 @@ export class WorkflowService {
   }
 
   /**
+   * List distinct tags currently in use across the project's workflows.
+   * Returned sorted alphabetically.
+   */
+  public static async listTags(projectId: string): Promise<string[]> {
+    const rows = await prisma.workflow.findMany({
+      where: {projectId},
+      select: {tags: true},
+    });
+
+    const set = new Set<string>();
+    for (const row of rows) {
+      for (const t of row.tags) {
+        set.add(t);
+      }
+    }
+
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }
+
+  /**
    * Get a single workflow by ID with all steps and transitions
    */
   public static async get(projectId: string, workflowId: string): Promise<WorkflowWithDetails> {
@@ -121,6 +144,7 @@ export class WorkflowService {
       eventName: string;
       enabled?: boolean;
       allowReentry?: boolean;
+      tags?: string[];
     },
   ): Promise<Workflow> {
     if (!data.eventName?.trim()) {
@@ -137,6 +161,7 @@ export class WorkflowService {
           triggerConfig: {eventName: data.eventName.trim()},
           enabled: data.enabled ?? false,
           allowReentry: data.allowReentry ?? false,
+          tags: normalizeTags(data.tags) ?? [],
         },
       });
 
@@ -184,6 +209,7 @@ export class WorkflowService {
       triggerConfig?: Prisma.JsonValue;
       enabled?: boolean;
       allowReentry?: boolean;
+      tags?: string[];
     },
   ): Promise<Workflow> {
     // Verify workflow exists and belongs to project
@@ -220,6 +246,10 @@ export class WorkflowService {
       }
       if (data.enabled !== undefined) updateData.enabled = data.enabled;
       if (data.allowReentry !== undefined) updateData.allowReentry = data.allowReentry;
+      if (data.tags !== undefined) {
+        const normalized = normalizeTags(data.tags);
+        if (normalized !== undefined) updateData.tags = {set: normalized};
+      }
 
       const updatedWorkflow = await tx.workflow.update({
         where: {id: workflowId},
@@ -327,15 +357,17 @@ export class WorkflowService {
   /**
    * Apply a bulk operation to multiple workflows at once.
    *
-   * The payload is intentionally open-ended (a single endpoint) so future bulk
-   * operations (e.g. enable / disable) can stack on the same operation. For now
-   * the only supported mode is `delete: true` (bulk delete).
+   * Supported modes (a single endpoint):
+   * - `delete: true` — bulk delete (see guards below).
+   * - `addTags` / `removeTags` — union/subtract the given tags on every selected
+   *   row. Both may be present in one call; the union is applied first, then the
+   *   subtraction. Each row's resulting tag list is normalized + de-duplicated.
    *
-   * Atomicity: every selected workflow must belong to the requesting project AND
-   * none of them may currently have active executions. Both checks plus the
-   * `deleteMany` are folded into a single Prisma transaction, so a partial bulk
-   * delete is impossible — either every selected workflow is removed, or the
-   * whole operation rolls back.
+   * Atomicity (delete): every selected workflow must belong to the requesting
+   * project AND none of them may currently have active executions. Both checks
+   * plus the `deleteMany` are folded into a single Prisma transaction, so a
+   * partial bulk delete is impossible — either every selected workflow is
+   * removed, or the whole operation rolls back.
    *
    * Guards mirror the single-workflow `delete()` above:
    * - 404 if any id is missing from this project (foreign / cross-project id).
@@ -345,12 +377,17 @@ export class WorkflowService {
    * as the single `delete()` does (Prisma relations). After the transaction
    * commits, the enabled-workflow cache is invalidated once if any deleted
    * workflow was enabled, matching the single-delete side effect.
+   *
+   * Atomicity (tags): every selected workflow's tag list is rewritten inside one
+   * transaction. An ownership check (`projectId`) scopes the rows; cross-project
+   * ids simply fall outside the update and never see their tags touched. Tags are
+   * pure metadata, so this path skips the active-execution guard.
    */
   public static async bulkUpdate(
     projectId: string,
-    options: {ids: string[]; delete?: boolean},
+    options: {ids: string[]; delete?: boolean; addTags?: string[]; removeTags?: string[]},
   ): Promise<{deleted?: number; updated?: number}> {
-    const {ids, delete: shouldDelete} = options;
+    const {ids, delete: shouldDelete, addTags, removeTags} = options;
 
     // Dedup defensively — the schema permits the same id twice and we don't
     // want duplicates inflating the ownership / row counts below.
@@ -407,8 +444,44 @@ export class WorkflowService {
       return {deleted};
     }
 
-    // No-op shape for forward-compat: when other bulk modes ship they'll branch
-    // off here. Returning {updated: 0} keeps the response shape stable.
+    // Tag add/remove mode. Normalize the requested tag deltas once; an empty
+    // delta on both sides is a no-op.
+    const toAdd = normalizeTags(addTags) ?? [];
+    const toRemove = new Set(normalizeTags(removeTags) ?? []);
+
+    if (toAdd.length > 0 || toRemove.size > 0) {
+      return prisma.$transaction(async tx => {
+        // Scope to this project's rows. Cross-project ids silently fall outside
+        // this query and are never touched.
+        const rows = await tx.workflow.findMany({
+          where: {id: {in: uniqueIds}, projectId},
+          select: {id: true, tags: true},
+        });
+
+        let updated = 0;
+        for (const row of rows) {
+          // Union the additions, then subtract the removals, normalizing the
+          // result to keep ordering stable and drop duplicates.
+          const merged = normalizeTags([...row.tags, ...toAdd]) ?? [];
+          const next = merged.filter(t => !toRemove.has(t));
+
+          // Skip the write when the tag list is unchanged.
+          const unchanged = next.length === row.tags.length && next.every((t, i) => t === row.tags[i]);
+          if (unchanged) continue;
+
+          await tx.workflow.update({
+            where: {id: row.id},
+            data: {tags: {set: next}},
+          });
+          updated += 1;
+        }
+
+        return {updated};
+      });
+    }
+
+    // No-op shape: no recognized operation. Returning {updated: 0} keeps the
+    // response shape stable.
     return {updated: 0};
   }
 
@@ -437,6 +510,7 @@ export class WorkflowService {
               : (source.triggerConfig as Prisma.InputJsonValue),
           enabled: false,
           allowReentry: source.allowReentry,
+          tags: source.tags,
         },
       });
 

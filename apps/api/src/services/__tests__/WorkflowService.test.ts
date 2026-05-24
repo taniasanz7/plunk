@@ -463,6 +463,82 @@ describe('WorkflowService', () => {
     });
   });
 
+  describe('bulkUpdate (tags)', () => {
+    it('should add tags as a union (no duplicates) across selected workflows', async () => {
+      const a = await factories.createWorkflow({projectId});
+      const b = await factories.createWorkflow({projectId});
+      // a already has "x"; the union must not duplicate it.
+      await prisma.workflow.update({where: {id: a.id}, data: {tags: {set: ['x']}}});
+
+      const result = await WorkflowService.bulkUpdate(projectId, {ids: [a.id, b.id], addTags: ['x', 'y']});
+
+      expect(result.updated).toBe(2);
+      expect((await prisma.workflow.findUnique({where: {id: a.id}}))?.tags).toEqual(['x', 'y']);
+      expect((await prisma.workflow.findUnique({where: {id: b.id}}))?.tags).toEqual(['x', 'y']);
+    });
+
+    it('should subtract tags with removeTags (and ignore tags not present)', async () => {
+      const a = await factories.createWorkflow({projectId});
+      await prisma.workflow.update({where: {id: a.id}, data: {tags: {set: ['keep', 'drop']}}});
+
+      const result = await WorkflowService.bulkUpdate(projectId, {ids: [a.id], removeTags: ['drop', 'absent']});
+
+      expect(result.updated).toBe(1);
+      expect((await prisma.workflow.findUnique({where: {id: a.id}}))?.tags).toEqual(['keep']);
+    });
+
+    it('should apply addTags then removeTags in a single call', async () => {
+      const a = await factories.createWorkflow({projectId});
+      await prisma.workflow.update({where: {id: a.id}, data: {tags: {set: ['old']}}});
+
+      const result = await WorkflowService.bulkUpdate(projectId, {
+        ids: [a.id],
+        addTags: ['new'],
+        removeTags: ['old'],
+      });
+
+      expect(result.updated).toBe(1);
+      expect((await prisma.workflow.findUnique({where: {id: a.id}}))?.tags).toEqual(['new']);
+    });
+
+    it('should not count rows whose tags are unchanged', async () => {
+      const a = await factories.createWorkflow({projectId});
+      await prisma.workflow.update({where: {id: a.id}, data: {tags: {set: ['x']}}});
+
+      const result = await WorkflowService.bulkUpdate(projectId, {ids: [a.id], addTags: ['x']});
+
+      expect(result.updated).toBe(0);
+      expect((await prisma.workflow.findUnique({where: {id: a.id}}))?.tags).toEqual(['x']);
+    });
+
+    it('should scope tag mutations to the project (cross-project ids are never touched)', async () => {
+      const {project: otherProject} = await factories.createUserWithProject();
+      const mine = await factories.createWorkflow({projectId});
+      const foreign = await factories.createWorkflow({projectId: otherProject.id});
+      await prisma.workflow.update({where: {id: foreign.id}, data: {tags: {set: ['untouched']}}});
+
+      const result = await WorkflowService.bulkUpdate(projectId, {ids: [mine.id, foreign.id], addTags: ['x']});
+
+      expect(result.updated).toBe(1);
+      expect((await prisma.workflow.findUnique({where: {id: mine.id}}))?.tags).toEqual(['x']);
+      expect((await prisma.workflow.findUnique({where: {id: foreign.id}}))?.tags).toEqual(['untouched']);
+    });
+
+    it('should not block tag mutations on workflows with active executions', async () => {
+      const busy = await factories.createWorkflow({projectId, enabled: true});
+      const contact = await factories.createContact({projectId});
+      await factories.createWorkflowExecution(busy.id, contact.id, {
+        status: WorkflowExecutionStatus.RUNNING,
+      });
+
+      // Tags are pure metadata, so the active-execution guard does not apply.
+      const result = await WorkflowService.bulkUpdate(projectId, {ids: [busy.id], addTags: ['x']});
+
+      expect(result.updated).toBe(1);
+      expect((await prisma.workflow.findUnique({where: {id: busy.id}}))?.tags).toEqual(['x']);
+    });
+  });
+
   // ========================================
   // WORKFLOW STEPS
   // ========================================

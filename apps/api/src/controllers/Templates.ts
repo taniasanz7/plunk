@@ -18,6 +18,7 @@ export class Templates {
    * - page, pageSize: pagination
    * - search: filter by name/description/subject
    * - type: filter by TemplateType
+   * - tag: filter to templates having this tag
    * - sort: name | createdAt | updatedAt (default: createdAt)
    * - dir: asc | desc (default: desc)
    */
@@ -30,11 +31,28 @@ export class Templates {
     const pageSize = Math.min(parseInt(req.query.pageSize as string) || 20, 100);
     const search = req.query.search as string | undefined;
     const type = req.query.type as TemplateType | undefined;
+    const tag = req.query.tag as string | undefined;
     const sort = parseListSort(req.query.sort, req.query.dir, {field: 'createdAt', direction: 'desc'});
 
-    const result = await TemplateService.list(auth.projectId!, page, pageSize, search, type, sort);
+    const result = await TemplateService.list(auth.projectId!, page, pageSize, search, type, sort, tag);
 
     return res.status(200).json(result);
+  }
+
+  /**
+   * GET /templates/tags
+   * List all distinct tags used by templates in the authenticated project.
+   * Defined BEFORE the :id route to avoid conflicts.
+   */
+  @Get('tags')
+  @Middleware([requireAuth, requireEmailVerified])
+  @CatchAsync
+  public async listTags(_req: Request, res: Response, _next: NextFunction) {
+    const auth = res.locals.auth;
+
+    const tags = await TemplateService.listTags(auth.projectId!);
+
+    return res.status(200).json({tags});
   }
 
   /**
@@ -66,7 +84,7 @@ export class Templates {
   @CatchAsync
   public async create(req: Request, res: Response, _next: NextFunction) {
     const auth = res.locals.auth;
-    const {name, description, subject, body, from, fromName, replyTo, type} = req.body;
+    const {name, description, subject, body, from, fromName, replyTo, type, tags} = req.body;
 
     if (!name) {
       return res.status(400).json({error: 'Name is required'});
@@ -96,6 +114,7 @@ export class Templates {
       fromName,
       replyTo,
       type,
+      tags,
     });
 
     return res.status(201).json(template);
@@ -111,7 +130,7 @@ export class Templates {
   public async update(req: Request, res: Response, _next: NextFunction) {
     const auth = res.locals.auth;
     const templateId = req.params.id;
-    const {name, description, subject, body, from, fromName, replyTo, type} = req.body;
+    const {name, description, subject, body, from, fromName, replyTo, type, tags} = req.body;
 
     if (!templateId) {
       return res.status(400).json({error: 'Template ID is required'});
@@ -131,6 +150,7 @@ export class Templates {
       fromName,
       replyTo,
       type,
+      tags,
     });
 
     return res.status(200).json(template);

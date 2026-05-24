@@ -478,6 +478,70 @@ describe('TemplateService', () => {
     });
   });
 
+  describe('bulkUpdate (tags)', () => {
+    it('should add tags as a union (no duplicates) across selected templates', async () => {
+      const a = await factories.createTemplate({projectId});
+      const b = await factories.createTemplate({projectId});
+      // a already has "x"; the union must not duplicate it.
+      await prisma.template.update({where: {id: a.id}, data: {tags: {set: ['x']}}});
+
+      const result = await TemplateService.bulkUpdate(projectId, {ids: [a.id, b.id], addTags: ['x', 'y']});
+
+      expect(result.updated).toBe(2);
+      expect((await prisma.template.findUnique({where: {id: a.id}}))?.tags).toEqual(['x', 'y']);
+      expect((await prisma.template.findUnique({where: {id: b.id}}))?.tags).toEqual(['x', 'y']);
+    });
+
+    it('should subtract tags with removeTags (and ignore tags not present)', async () => {
+      const a = await factories.createTemplate({projectId});
+      await prisma.template.update({where: {id: a.id}, data: {tags: {set: ['keep', 'drop']}}});
+
+      const result = await TemplateService.bulkUpdate(projectId, {ids: [a.id], removeTags: ['drop', 'absent']});
+
+      expect(result.updated).toBe(1);
+      expect((await prisma.template.findUnique({where: {id: a.id}}))?.tags).toEqual(['keep']);
+    });
+
+    it('should apply addTags then removeTags in a single call', async () => {
+      const a = await factories.createTemplate({projectId});
+      await prisma.template.update({where: {id: a.id}, data: {tags: {set: ['old']}}});
+
+      const result = await TemplateService.bulkUpdate(projectId, {
+        ids: [a.id],
+        addTags: ['new'],
+        removeTags: ['old'],
+      });
+
+      expect(result.updated).toBe(1);
+      expect((await prisma.template.findUnique({where: {id: a.id}}))?.tags).toEqual(['new']);
+    });
+
+    it('should not count rows whose tags are unchanged', async () => {
+      const a = await factories.createTemplate({projectId});
+      await prisma.template.update({where: {id: a.id}, data: {tags: {set: ['x']}}});
+
+      // Adding a tag the row already has is a no-op for that row.
+      const result = await TemplateService.bulkUpdate(projectId, {ids: [a.id], addTags: ['x']});
+
+      expect(result.updated).toBe(0);
+      expect((await prisma.template.findUnique({where: {id: a.id}}))?.tags).toEqual(['x']);
+    });
+
+    it('should scope tag mutations to the project (cross-project ids are never touched)', async () => {
+      const {project: otherProject} = await factories.createUserWithProject();
+      const mine = await factories.createTemplate({projectId});
+      const foreign = await factories.createTemplate({projectId: otherProject.id});
+      await prisma.template.update({where: {id: foreign.id}, data: {tags: {set: ['untouched']}}});
+
+      const result = await TemplateService.bulkUpdate(projectId, {ids: [mine.id, foreign.id], addTags: ['x']});
+
+      // Only the in-project row is updated; the foreign row keeps its tags.
+      expect(result.updated).toBe(1);
+      expect((await prisma.template.findUnique({where: {id: mine.id}}))?.tags).toEqual(['x']);
+      expect((await prisma.template.findUnique({where: {id: foreign.id}}))?.tags).toEqual(['untouched']);
+    });
+  });
+
   describe('duplicate', () => {
     it('should duplicate a template with (Copy) suffix', async () => {
       const original = await factories.createTemplate({

@@ -6,6 +6,7 @@ import {prisma} from '../database/prisma.js';
 import {HttpException} from '../exceptions/index.js';
 import type {ListSort} from '../utils/listSort.js';
 import {buildEmailFieldsUpdate} from '../utils/modelUpdate.js';
+import {normalizeTags} from '../utils/tags.js';
 
 export class TemplateService {
   /**
@@ -18,12 +19,14 @@ export class TemplateService {
     search?: string,
     type?: Template['type'],
     sort: ListSort = {field: 'createdAt', direction: 'desc'},
+    tag?: string,
   ): Promise<PaginatedResponse<Template>> {
     const skip = (page - 1) * pageSize;
 
     const where: Prisma.TemplateWhereInput = {
       projectId,
       ...(type ? {type} : {}),
+      ...(tag ? {tags: {has: tag}} : {}),
       ...(search
         ? {
             OR: [
@@ -52,6 +55,26 @@ export class TemplateService {
       pageSize,
       totalPages: Math.ceil(total / pageSize),
     };
+  }
+
+  /**
+   * List distinct tags currently in use across the project's templates.
+   * Returned sorted alphabetically.
+   */
+  public static async listTags(projectId: string): Promise<string[]> {
+    const rows = await prisma.template.findMany({
+      where: {projectId},
+      select: {tags: true},
+    });
+
+    const set = new Set<string>();
+    for (const row of rows) {
+      for (const t of row.tags) {
+        set.add(t);
+      }
+    }
+
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
   }
 
   /**
@@ -86,6 +109,7 @@ export class TemplateService {
       fromName?: string | null;
       replyTo?: string | null;
       type?: Template['type'];
+      tags?: string[];
     },
   ): Promise<Template> {
     return prisma.template.create({
@@ -99,6 +123,7 @@ export class TemplateService {
         fromName: data.fromName,
         replyTo: data.replyTo,
         type: data.type ?? 'MARKETING',
+        tags: normalizeTags(data.tags) ?? [],
       },
     });
   }
@@ -118,14 +143,18 @@ export class TemplateService {
       fromName?: string | null;
       replyTo?: string | null;
       type?: Template['type'];
+      tags?: string[];
     },
   ): Promise<Template> {
     // Verify template exists and belongs to project
     await this.get(projectId, templateId);
 
+    const normalizedTags = normalizeTags(data.tags);
+
     const updateData = {
       ...buildEmailFieldsUpdate(data),
       ...(data.type !== undefined ? {type: data.type} : {}),
+      ...(normalizedTags !== undefined ? {tags: {set: normalizedTags}} : {}),
     } as Prisma.TemplateUpdateInput;
 
     return prisma.template.update({
@@ -164,26 +193,31 @@ export class TemplateService {
   /**
    * Apply a bulk operation to multiple templates at once.
    *
-   * The payload is intentionally open-ended (a single endpoint) so future
-   * tag-related fields (`addTags` / `removeTags`) can stack on the same
-   * operation once a `Template.tags` column exists. For now the only
-   * supported mode is `delete: true` (bulk delete).
+   * Supported modes (a single endpoint):
+   * - `delete: true` — bulk delete (see guards below).
+   * - `addTags` / `removeTags` — union/subtract the given tags on every selected
+   *   row. Both may be present in one call; the union is applied first, then the
+   *   subtraction. Each row's resulting tag list is normalized + de-duplicated.
    *
-   * Atomicity: every selected template must belong to the requesting project
-   * AND none of them may currently be referenced by a workflow step. Both
-   * checks plus the `deleteMany` are folded into a single Prisma transaction,
-   * so a partial bulk delete is impossible — either every selected template is
-   * removed, or the whole operation rolls back.
+   * Atomicity (delete): every selected template must belong to the requesting
+   * project AND none of them may currently be referenced by a workflow step.
+   * Both checks plus the `deleteMany` are folded into a single Prisma
+   * transaction, so a partial bulk delete is impossible — either every selected
+   * template is removed, or the whole operation rolls back.
    *
    * - 404 if any id is missing from this project (foreign / cross-project id).
    * - 409 if any selected template is still referenced by a workflow step
    *   (mirrors the single-template `delete()` guard above).
+   *
+   * Atomicity (tags): every selected template's tag list is rewritten inside one
+   * transaction. An ownership check (`projectId`) scopes the rows; cross-project
+   * ids simply fall outside the update and never see their tags touched.
    */
   public static async bulkUpdate(
     projectId: string,
-    options: {ids: string[]; delete?: boolean},
+    options: {ids: string[]; delete?: boolean; addTags?: string[]; removeTags?: string[]},
   ): Promise<{deleted?: number; updated?: number}> {
-    const {ids, delete: shouldDelete} = options;
+    const {ids, delete: shouldDelete, addTags, removeTags} = options;
 
     // Dedup defensively — the schema permits the same id twice and we don't
     // want duplicates inflating the ownership/row counts below.
@@ -236,8 +270,44 @@ export class TemplateService {
       });
     }
 
-    // No-op shape for forward-compat: when tag add/remove modes ship they'll
-    // branch off here. Returning {updated: 0} keeps the response shape stable.
+    // Tag add/remove mode. Normalize the requested tag deltas once; an empty
+    // delta on both sides is a no-op.
+    const toAdd = normalizeTags(addTags) ?? [];
+    const toRemove = new Set(normalizeTags(removeTags) ?? []);
+
+    if (toAdd.length > 0 || toRemove.size > 0) {
+      return prisma.$transaction(async tx => {
+        // Scope to this project's rows. Cross-project ids silently fall outside
+        // this query and are never touched.
+        const rows = await tx.template.findMany({
+          where: {id: {in: uniqueIds}, projectId},
+          select: {id: true, tags: true},
+        });
+
+        let updated = 0;
+        for (const row of rows) {
+          // Union the additions, then subtract the removals, normalizing the
+          // result to keep ordering stable and drop duplicates.
+          const merged = normalizeTags([...row.tags, ...toAdd]) ?? [];
+          const next = merged.filter(t => !toRemove.has(t));
+
+          // Skip the write when the tag list is unchanged.
+          const unchanged = next.length === row.tags.length && next.every((t, i) => t === row.tags[i]);
+          if (unchanged) continue;
+
+          await tx.template.update({
+            where: {id: row.id},
+            data: {tags: {set: next}},
+          });
+          updated += 1;
+        }
+
+        return {updated};
+      });
+    }
+
+    // No-op shape: no recognized operation. Returning {updated: 0} keeps the
+    // response shape stable.
     return {updated: 0};
   }
 
@@ -259,6 +329,7 @@ export class TemplateService {
         fromName: template.fromName,
         replyTo: template.replyTo,
         type: template.type,
+        tags: template.tags,
       },
     });
   }

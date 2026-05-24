@@ -28,6 +28,7 @@ import {
 } from '@plunk/ui';
 import type {Workflow, WorkflowExecution, WorkflowStep, WorkflowTransition} from '@plunk/db';
 import {DashboardLayout} from '../../components/DashboardLayout';
+import {TagInput} from '../../components/TagInput';
 import {network} from '../../lib/network';
 import {
   AlertTriangle,
@@ -316,6 +317,7 @@ export default function WorkflowEditorPage() {
     description?: string;
     allowReentry?: boolean;
     triggerConfig?: {eventName: string};
+    tags?: string[];
   }) => {
     try {
       await network.fetch<Workflow, typeof WorkflowSchemas.update>('PATCH', `/workflows/${id}`, data);
@@ -748,6 +750,7 @@ interface SettingsDialogProps {
     description?: string;
     allowReentry?: boolean;
     triggerConfig?: {eventName: string};
+    tags?: string[];
   }) => Promise<void>;
 }
 
@@ -757,6 +760,7 @@ function SettingsDialog({workflow, open, onOpenChange, onSave}: SettingsDialogPr
   const [description, setDescription] = useState(workflow.description ?? '');
   const [allowReentry, setAllowReentry] = useState(workflow.allowReentry ?? false);
   const [eventName, setEventName] = useState(triggerConfig?.eventName ?? '');
+  const [tags, setTags] = useState<string[]>(workflow.tags ?? []);
   const [eventPopoverOpen, setEventPopoverOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -768,6 +772,7 @@ function SettingsDialog({workflow, open, onOpenChange, onSave}: SettingsDialogPr
       setAllowReentry(workflow.allowReentry ?? false);
       const config = workflow.triggerConfig as {eventName?: string} | null;
       setEventName(config?.eventName ?? '');
+      setTags(workflow.tags ?? []);
     }
   }, [open, workflow]);
 
@@ -786,6 +791,7 @@ function SettingsDialog({workflow, open, onOpenChange, onSave}: SettingsDialogPr
         description: description || undefined,
         allowReentry,
         triggerConfig: eventName.trim() ? {eventName: eventName.trim()} : undefined,
+        tags,
       });
     } finally {
       setIsSubmitting(false);
@@ -813,6 +819,12 @@ function SettingsDialog({workflow, open, onOpenChange, onSave}: SettingsDialogPr
               className="w-full px-3 py-2 border border-neutral-200 rounded-lg text-sm"
               rows={3}
             />
+          </div>
+
+          <div>
+            <Label htmlFor="workflowTags">Tags</Label>
+            <TagInput id="workflowTags" value={tags} onChange={setTags} placeholder="Press Enter to add" />
+            <p className="text-xs text-neutral-500 mt-1">Use tags to organize and filter workflows on the list view.</p>
           </div>
 
           <div>

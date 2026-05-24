@@ -20,7 +20,9 @@ import {
   type SortingState,
   type VisibilityState,
 } from '@tanstack/react-table';
+import {BulkTagDialog} from '../../components/BulkTagDialog';
 import {DashboardLayout} from '../../components/DashboardLayout';
+import {TagFilterBar} from '../../components/TagFilterBar';
 import {
   BulkActionBar,
   DataTable,
@@ -38,7 +40,7 @@ import {formatRelativeTime} from '../../lib/dateUtils';
 import {useColumnVisibility} from '../../lib/hooks/useColumnVisibility';
 import {usePersistentState} from '../../lib/hooks/usePersistentState';
 import {useShiftClickSelection} from '../../lib/hooks/useShiftClickSelection';
-import {Calendar, Copy, Edit, FileText, Plus, Search, Trash2, X} from 'lucide-react';
+import {Calendar, Copy, Edit, FileText, Plus, Search, Tag, Trash2, X} from 'lucide-react';
 import {NextSeo} from 'next-seo';
 import Link from 'next/link';
 import {useEffect, useMemo, useState} from 'react';
@@ -58,6 +60,7 @@ const DEFAULT_COLUMN_VISIBILITY: VisibilityState = {
   name: true,
   type: true,
   subject: true,
+  tags: true,
   updatedAt: true,
   actions: true,
 };
@@ -71,11 +74,13 @@ export default function TemplatesPage() {
   const [search, setSearch] = useState('');
   const [searchInput, setSearchInput] = useState('');
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('ALL');
+  const [tagFilter, setTagFilter] = useState<string | null>(null);
   const [view, setView] = usePersistentState<DataTableView>(VIEW_STORAGE_KEY, 'card', isDataTableView);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [templateToDelete, setTemplateToDelete] = useState<string | null>(null);
   const [showBulkDeleteDialog, setShowBulkDeleteDialog] = useState(false);
   const [bulkDeleteStatus, setBulkDeleteStatus] = useState<'idle' | 'loading'>('idle');
+  const [bulkTagMode, setBulkTagMode] = useState<'add' | 'remove' | null>(null);
 
   // Tanstack table state.
   const [sorting, setSorting] = useState<SortingState>([]);
@@ -92,9 +97,16 @@ export default function TemplatesPage() {
   const {data, mutate, isLoading} = useSWR<PaginatedResponse<Template>>(
     `/templates?page=${page}&pageSize=20${search ? `&search=${encodeURIComponent(search)}` : ''}${
       typeFilter !== 'ALL' ? `&type=${typeFilter}` : ''
-    }${sortParam ? `&sort=${sortParam}&dir=${dirParam}` : ''}`,
+    }${tagFilter ? `&tag=${encodeURIComponent(tagFilter)}` : ''}${
+      sortParam ? `&sort=${sortParam}&dir=${dirParam}` : ''
+    }`,
     {revalidateOnFocus: false},
   );
+
+  // Distinct in-use tags for the facet (table view) and pill row (card view).
+  const {data: tagsData, mutate: mutateTags} = useSWR<{tags: string[]}>('/templates/tags', {
+    revalidateOnFocus: false,
+  });
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -105,12 +117,12 @@ export default function TemplatesPage() {
   }, [searchInput]);
 
   // Clear row selection whenever the visible data set changes (page, search,
-  // type filter). Selections only make sense for currently-visible rows —
-  // keeping a stale selection across pagination would let the user bulk-delete
-  // templates they can no longer see.
+  // type filter, tag filter). Selections only make sense for currently-visible
+  // rows — keeping a stale selection across pagination would let the user
+  // bulk-delete templates they can no longer see.
   useEffect(() => {
     setRowSelection({});
-  }, [page, search, typeFilter]);
+  }, [page, search, typeFilter, tagFilter]);
 
   const handleDelete = async () => {
     if (!templateToDelete) return;
@@ -160,6 +172,22 @@ export default function TemplatesPage() {
       // ConfirmDialog closes itself after onConfirm resolves.
       setBulkDeleteStatus('idle');
     }
+  };
+
+  // Apply a tag add/remove to all selected templates in one bulk call, then
+  // refresh both the list and the distinct-tags set so the facet/pill options
+  // reflect newly-added or now-unused tags.
+  const handleBulkTags = async (mode: 'add' | 'remove', tags: string[]) => {
+    if (selectedIds.length === 0 || tags.length === 0) return;
+    await network.fetch<{updated?: number}, typeof TemplateSchemas.bulkUpdate>('POST', '/templates/bulk-update', {
+      ids: selectedIds,
+      ...(mode === 'add' ? {addTags: tags} : {removeTags: tags}),
+    });
+    toast.success(mode === 'add' ? 'Tags added' : 'Tags removed');
+    setBulkTagMode(null);
+    setRowSelection({});
+    void mutate();
+    void mutateTags();
   };
 
   const columns = useMemo<Array<ColumnDef<Template, unknown>>>(
@@ -254,6 +282,47 @@ export default function TemplatesPage() {
         ),
       },
       {
+        id: 'tags',
+        enableSorting: false, // Tags are faceted-filtered, not sorted.
+        meta: {label: 'Tags', cellClassName: 'max-w-xs'} satisfies DataTableColumnMeta,
+        header: ({column}) => (
+          <DataTableColumnHeader
+            column={column}
+            // Single-select facet — mirrors the API's single-value `?tag=` filter
+            // (Prisma `tags: {has}`). Options come from /templates/tags.
+            filter={
+              <DataTableFacetedFilter
+                title="Tags"
+                multiple={false}
+                options={(tagsData?.tags ?? []).map(t => ({value: t, label: t}))}
+                selected={tagFilter ? [tagFilter] : []}
+                onChange={next => {
+                  setTagFilter(next[0] ?? null);
+                  setPage(1);
+                }}
+              />
+            }
+          >
+            Tags
+          </DataTableColumnHeader>
+        ),
+        cell: ({row}) =>
+          row.original.tags && row.original.tags.length > 0 ? (
+            <div className="flex flex-wrap gap-1">
+              {row.original.tags.map(tag => (
+                <span
+                  key={tag}
+                  className="inline-flex items-center rounded-full bg-neutral-100 px-2 py-0.5 text-[11px] font-medium text-neutral-600"
+                >
+                  {tag}
+                </span>
+              ))}
+            </div>
+          ) : (
+            <span className="text-sm text-neutral-400">—</span>
+          ),
+      },
+      {
         id: 'updatedAt',
         accessorKey: 'updatedAt',
         // ISO-string values sort ascending on first click by default; flip so
@@ -309,9 +378,9 @@ export default function TemplatesPage() {
       },
     ],
     // Re-creating columns on every render is cheap and avoids stale-closure bugs
-    // for the typeFilter-driven facet and delete/duplicate handlers.
+    // for the type/tag facets and delete/duplicate handlers.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [typeFilter],
+    [typeFilter, tagFilter, tagsData?.tags],
   );
 
   const table = useReactTable<Template>({
@@ -426,11 +495,42 @@ export default function TemplatesPage() {
             <DataTableViewSwitcher view={view} onChange={setView} />
           </div>
 
+          {/* Tag filter — CARD VIEW ONLY. In table view the same filter lives in
+              the Tags column header facet, so the pill row is not rendered.
+              Mirrors the Type pills staying as pills in card view. */}
+          {view === 'card' && tagsData?.tags && tagsData.tags.length > 0 && (
+            <TagFilterBar
+              tags={tagsData.tags}
+              selected={tagFilter}
+              onChange={tag => {
+                setTagFilter(tag);
+                setPage(1);
+              }}
+            />
+          )}
+
           {/* Bulk action bar — table view only (the selection column lives
-              there). Wires the delete action; the children slot stays open for
-              future bulk operations. */}
+              there). Wires delete + tag add/remove actions. */}
           {view === 'table' && (
             <BulkActionBar selectedCount={selectedIds.length} itemNoun="template" onClear={() => setRowSelection({})}>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setBulkTagMode('add')}
+              >
+                <Tag className="h-4 w-4" />
+                Add tags…
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setBulkTagMode('remove')}
+              >
+                <Tag className="h-4 w-4" />
+                Remove tags…
+              </Button>
               <Button
                 type="button"
                 variant="destructive"
@@ -501,6 +601,18 @@ export default function TemplatesPage() {
                           </Badge>
                         </div>
                         <p className="text-sm font-medium text-neutral-700 truncate">{template.subject}</p>
+                        {template.tags && template.tags.length > 0 && (
+                          <div className="flex flex-wrap gap-1 mt-2">
+                            {template.tags.map(tag => (
+                              <span
+                                key={tag}
+                                className="inline-flex items-center rounded-full bg-neutral-100 px-2 py-0.5 text-[11px] font-medium text-neutral-600"
+                              >
+                                {tag}
+                              </span>
+                            ))}
+                          </div>
+                        )}
                       </Link>
                       <div className="px-6 py-3 border-t border-neutral-100 flex items-center justify-between">
                         <div className="flex items-center gap-1.5 text-xs text-neutral-400">
@@ -627,6 +739,14 @@ export default function TemplatesPage() {
           confirmText="Delete"
           variant="destructive"
           status={bulkDeleteStatus}
+        />
+
+        <BulkTagDialog
+          mode={bulkTagMode}
+          onClose={() => setBulkTagMode(null)}
+          selectedCount={selectedIds.length}
+          itemNoun="template"
+          onApply={handleBulkTags}
         />
       </DashboardLayout>
     </>

@@ -29,7 +29,10 @@ import {
   type SortingState,
   type VisibilityState,
 } from '@tanstack/react-table';
+import {BulkTagDialog} from '../../components/BulkTagDialog';
 import {DashboardLayout} from '../../components/DashboardLayout';
+import {TagFilterBar} from '../../components/TagFilterBar';
+import {TagInput} from '../../components/TagInput';
 import {
   BulkActionBar,
   DataTable,
@@ -47,7 +50,7 @@ import {formatRelativeTime} from '../../lib/dateUtils';
 import {useColumnVisibility} from '../../lib/hooks/useColumnVisibility';
 import {usePersistentState} from '../../lib/hooks/usePersistentState';
 import {useShiftClickSelection} from '../../lib/hooks/useShiftClickSelection';
-import {Calendar, Copy, Edit, Plus, Power, PowerOff, Search, Trash2, Workflow as WorkflowIcon, X, Zap} from 'lucide-react';
+import {Calendar, Copy, Edit, Plus, Power, PowerOff, Search, Tag, Trash2, Workflow as WorkflowIcon, X, Zap} from 'lucide-react';
 import {NextSeo} from 'next-seo';
 import Link from 'next/link';
 import {useEffect, useMemo, useState} from 'react';
@@ -80,6 +83,7 @@ const DEFAULT_COLUMN_VISIBILITY: VisibilityState = {
   trigger: true,
   status: true,
   steps: true,
+  tags: true,
   updatedAt: true,
   actions: true,
 };
@@ -89,11 +93,13 @@ export default function WorkflowsPage() {
   const [search, setSearch] = useState('');
   const [searchInput, setSearchInput] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('ALL');
+  const [tagFilter, setTagFilter] = useState<string | null>(null);
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [workflowToDelete, setWorkflowToDelete] = useState<string | null>(null);
   const [showBulkDeleteDialog, setShowBulkDeleteDialog] = useState(false);
   const [bulkDeleteStatus, setBulkDeleteStatus] = useState<'idle' | 'loading'>('idle');
+  const [bulkTagMode, setBulkTagMode] = useState<'add' | 'remove' | null>(null);
   const [view, setView] = usePersistentState<DataTableView>(VIEW_STORAGE_KEY, 'card', isDataTableView);
 
   // Tanstack table state.
@@ -111,9 +117,16 @@ export default function WorkflowsPage() {
   const {data, mutate, isLoading} = useSWR<PaginatedResponse<WorkflowRow>>(
     `/workflows?page=${page}&pageSize=20${search ? `&search=${encodeURIComponent(search)}` : ''}${
       statusFilter !== 'ALL' ? `&status=${statusFilter}` : ''
-    }${sortParam ? `&sort=${sortParam}&dir=${dirParam}` : ''}`,
+    }${tagFilter ? `&tag=${encodeURIComponent(tagFilter)}` : ''}${
+      sortParam ? `&sort=${sortParam}&dir=${dirParam}` : ''
+    }`,
     {revalidateOnFocus: false},
   );
+
+  // Distinct in-use tags for the facet (table view) and pill row (card view).
+  const {data: tagsData, mutate: mutateTags} = useSWR<{tags: string[]}>('/workflows/tags', {
+    revalidateOnFocus: false,
+  });
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -123,13 +136,13 @@ export default function WorkflowsPage() {
     return () => clearTimeout(timer);
   }, [searchInput]);
 
-  // Clear row selection whenever the visible data set changes (page, search).
-  // Selections only make sense for currently-visible rows — keeping a stale
-  // selection across pagination would let the user bulk-delete workflows they
-  // can no longer see.
+  // Clear row selection whenever the visible data set changes (page, search,
+  // tag filter). Selections only make sense for currently-visible rows —
+  // keeping a stale selection across pagination would let the user bulk-delete
+  // workflows they can no longer see.
   useEffect(() => {
     setRowSelection({});
-  }, [page, search, statusFilter]);
+  }, [page, search, statusFilter, tagFilter]);
 
   const handleDelete = async () => {
     if (!workflowToDelete) return;
@@ -191,6 +204,22 @@ export default function WorkflowsPage() {
       // ConfirmDialog closes itself after onConfirm resolves.
       setBulkDeleteStatus('idle');
     }
+  };
+
+  // Apply a tag add/remove to all selected workflows in one bulk call, then
+  // refresh both the list and the distinct-tags set so the facet/pill options
+  // reflect newly-added or now-unused tags.
+  const handleBulkTags = async (mode: 'add' | 'remove', tags: string[]) => {
+    if (selectedIds.length === 0 || tags.length === 0) return;
+    await network.fetch<{updated?: number}, typeof WorkflowSchemas.bulkUpdate>('POST', '/workflows/bulk-update', {
+      ids: selectedIds,
+      ...(mode === 'add' ? {addTags: tags} : {removeTags: tags}),
+    });
+    toast.success(mode === 'add' ? 'Tags added' : 'Tags removed');
+    setBulkTagMode(null);
+    setRowSelection({});
+    void mutate();
+    void mutateTags();
   };
 
   const triggerEventName = (workflow: WorkflowRow): string | null =>
@@ -322,6 +351,47 @@ export default function WorkflowsPage() {
         ),
       },
       {
+        id: 'tags',
+        enableSorting: false, // Tags are faceted-filtered, not sorted.
+        meta: {label: 'Tags', cellClassName: 'max-w-xs'} satisfies DataTableColumnMeta,
+        header: ({column}) => (
+          <DataTableColumnHeader
+            column={column}
+            // Single-select facet — mirrors the API's single-value `?tag=` filter
+            // (Prisma `tags: {has}`). Options come from /workflows/tags.
+            filter={
+              <DataTableFacetedFilter
+                title="Tags"
+                multiple={false}
+                options={(tagsData?.tags ?? []).map(t => ({value: t, label: t}))}
+                selected={tagFilter ? [tagFilter] : []}
+                onChange={next => {
+                  setTagFilter(next[0] ?? null);
+                  setPage(1);
+                }}
+              />
+            }
+          >
+            Tags
+          </DataTableColumnHeader>
+        ),
+        cell: ({row}) =>
+          row.original.tags && row.original.tags.length > 0 ? (
+            <div className="flex flex-wrap gap-1">
+              {row.original.tags.map(tag => (
+                <span
+                  key={tag}
+                  className="inline-flex items-center rounded-full bg-neutral-100 px-2 py-0.5 text-[11px] font-medium text-neutral-600"
+                >
+                  {tag}
+                </span>
+              ))}
+            </div>
+          ) : (
+            <span className="text-sm text-neutral-400">—</span>
+          ),
+      },
+      {
         id: 'updatedAt',
         accessorKey: 'updatedAt',
         // ISO-string values sort ascending on first click by default; flip so
@@ -386,9 +456,9 @@ export default function WorkflowsPage() {
       },
     ],
     // Re-creating columns on every render is cheap and avoids stale-closure bugs
-    // for the toggle/delete/duplicate handlers and the status-facet state.
+    // for the toggle/delete/duplicate handlers and the tag-/status-facet state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [statusFilter],
+    [statusFilter, tagFilter, tagsData?.tags],
   );
 
   const table = useReactTable<WorkflowRow>({
@@ -412,14 +482,15 @@ export default function WorkflowsPage() {
 
   // Whether any search/facet filter is currently narrowing the list. Drives the
   // "no results vs first-run empty" distinction below.
-  const hasActiveFilters = search !== '' || statusFilter !== 'ALL';
+  const hasActiveFilters = search !== '' || statusFilter !== 'ALL' || tagFilter !== null;
 
-  // Reset everything that can hide rows (search + status + pagination) so the
-  // user can recover from a filter combination that matched nothing.
+  // Reset everything that can hide rows (search + status + tag + pagination) so
+  // the user can recover from a filter combination that matched nothing.
   const clearFilters = () => {
     setSearchInput('');
     setSearch('');
     setStatusFilter('ALL');
+    setTagFilter(null);
     setPage(1);
   };
 
@@ -450,7 +521,9 @@ export default function WorkflowsPage() {
                 filter lives in the column header facet, so the pills are not
                 rendered (mirrors the campaigns Status-filter precedent).
               - Columns selector: table view only.
-              - View switcher rounds out the row. */}
+              - View switcher rounds out the row. The Tag filter lives in the
+                Tags column header facet (table view) and as a pill row below
+                (card view), matching the templates Type-filter precedent. */}
           <div className="flex flex-col sm:flex-row sm:items-center gap-3">
             <div className="relative flex-1">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-neutral-400" />
@@ -502,11 +575,41 @@ export default function WorkflowsPage() {
             <DataTableViewSwitcher view={view} onChange={setView} />
           </div>
 
+          {/* Tag filter — CARD VIEW ONLY. In table view the same filter lives in
+              the Tags column header facet, so the pill row is not rendered. */}
+          {view === 'card' && tagsData?.tags && tagsData.tags.length > 0 && (
+            <TagFilterBar
+              tags={tagsData.tags}
+              selected={tagFilter}
+              onChange={tag => {
+                setTagFilter(tag);
+                setPage(1);
+              }}
+            />
+          )}
+
           {/* Bulk action bar — table view only (the selection column lives
-              there). Wires the delete action; the children slot stays open for
-              future bulk operations. */}
+              there). Wires delete + tag add/remove actions. */}
           {view === 'table' && (
             <BulkActionBar selectedCount={selectedIds.length} itemNoun="workflow" onClear={() => setRowSelection({})}>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setBulkTagMode('add')}
+              >
+                <Tag className="h-4 w-4" />
+                Add tags…
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setBulkTagMode('remove')}
+              >
+                <Tag className="h-4 w-4" />
+                Remove tags…
+              </Button>
               <Button
                 type="button"
                 variant="destructive"
@@ -597,6 +700,18 @@ export default function WorkflowsPage() {
                             <span className="text-neutral-400 ml-1 text-xs">executions</span>
                           </span>
                         </div>
+                        {workflow.tags && workflow.tags.length > 0 && (
+                          <div className="flex flex-wrap gap-1 mt-3">
+                            {workflow.tags.map(tag => (
+                              <span
+                                key={tag}
+                                className="inline-flex items-center rounded-full bg-neutral-100 px-2 py-0.5 text-[11px] font-medium text-neutral-600"
+                              >
+                                {tag}
+                              </span>
+                            ))}
+                          </div>
+                        )}
                       </Link>
                       <div className="px-6 py-3 border-t border-neutral-100 flex items-center justify-between">
                         <div className="flex items-center gap-1.5 text-xs text-neutral-400">
@@ -733,6 +848,14 @@ export default function WorkflowsPage() {
           variant="destructive"
           status={bulkDeleteStatus}
         />
+
+        <BulkTagDialog
+          mode={bulkTagMode}
+          onClose={() => setBulkTagMode(null)}
+          selectedCount={selectedIds.length}
+          itemNoun="workflow"
+          onApply={handleBulkTags}
+        />
       </DashboardLayout>
     </>
   );
@@ -750,6 +873,7 @@ function CreateWorkflowDialog({open, onOpenChange, onSuccess}: CreateWorkflowDia
   const [eventName, setEventName] = useState('');
   const [eventPopoverOpen, setEventPopoverOpen] = useState(false);
   const [allowReentry, setAllowReentry] = useState(false);
+  const [tags, setTags] = useState<string[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Fetch available event names
@@ -768,6 +892,7 @@ function CreateWorkflowDialog({open, onOpenChange, onSuccess}: CreateWorkflowDia
         eventName: eventName.trim(),
         allowReentry,
         enabled: false,
+        tags: tags.length > 0 ? tags : undefined,
       });
 
       toast.success('Workflow created successfully');
@@ -775,6 +900,7 @@ function CreateWorkflowDialog({open, onOpenChange, onSuccess}: CreateWorkflowDia
       setDescription('');
       setEventName('');
       setAllowReentry(false);
+      setTags([]);
       onOpenChange(false);
       onSuccess();
 
@@ -816,6 +942,11 @@ function CreateWorkflowDialog({open, onOpenChange, onSuccess}: CreateWorkflowDia
               className="w-full px-3 py-2 border border-neutral-200 rounded-md text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
               rows={3}
             />
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="createWorkflowTags">Tags</Label>
+            <TagInput id="createWorkflowTags" value={tags} onChange={setTags} placeholder="Press Enter to add" />
           </div>
 
           <div className="space-y-1.5">
