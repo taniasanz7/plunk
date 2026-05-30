@@ -4,25 +4,35 @@ import {Tag, X} from 'lucide-react';
 interface TagFilterBarProps {
   /** Distinct tags to render as filter chips */
   tags: string[];
-  /** Currently selected tag, or null when no filter is active */
-  selected: string | null;
-  /** Called with the tag to activate, or null to clear */
-  onChange: (next: string | null) => void;
+  /** Currently selected tags (empty when no filter is active) */
+  selected: string[];
+  /** Called with the full next selection whenever a chip is toggled or cleared */
+  onChange: (next: string[]) => void;
 }
 
 /**
- * Single-select tag filter rendered as a horizontal chip row.
+ * Multi-select tag filter rendered as a horizontal chip row.
  *
- * Single-select because the API's `?tag=` filter accepts a single value
- * (Prisma `tags: {has}`), so the card-view affordance matches the table-view
- * facet and the server contract.
+ * Multi-select with OR semantics to mirror the table-view Tags facet and the
+ * API's `?tag=a&tag=b` filter (Prisma `tags: {hasSome}`): a row matches if it
+ * carries ANY of the selected tags.
  *
- * - Click a chip to activate the filter.
- * - Click the active chip (or the "Clear" button) to remove it.
+ * - Click a chip to add it to the filter.
+ * - Click an active chip (or the "Clear" button) to remove it / clear all.
  * - Renders nothing when there are no tags to show.
  */
 export function TagFilterBar({tags, selected, onChange}: TagFilterBarProps) {
   if (tags.length === 0) return null;
+
+  const selectedSet = new Set(selected);
+
+  const toggle = (tag: string) => {
+    if (selectedSet.has(tag)) {
+      onChange(selected.filter(t => t !== tag));
+    } else {
+      onChange([...selected, tag]);
+    }
+  };
 
   return (
     <div className="flex flex-wrap items-center gap-1.5">
@@ -31,14 +41,14 @@ export function TagFilterBar({tags, selected, onChange}: TagFilterBarProps) {
         Tags:
       </span>
       {tags.map(tag => {
-        const active = tag === selected;
+        const active = selectedSet.has(tag);
         return (
           <Button
             key={tag}
             type="button"
             size="sm"
             variant={active ? 'default' : 'secondary'}
-            onClick={() => onChange(active ? null : tag)}
+            onClick={() => toggle(tag)}
             aria-pressed={active}
             className="h-7 px-2.5 text-xs"
           >
@@ -46,12 +56,12 @@ export function TagFilterBar({tags, selected, onChange}: TagFilterBarProps) {
           </Button>
         );
       })}
-      {selected && (
+      {selected.length > 0 && (
         <Button
           type="button"
           size="sm"
           variant="ghost"
-          onClick={() => onChange(null)}
+          onClick={() => onChange([])}
           className="h-7 px-1.5 text-xs text-neutral-500"
           aria-label="Clear tag filter"
         >

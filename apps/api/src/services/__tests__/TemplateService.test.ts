@@ -208,6 +208,60 @@ describe('TemplateService', () => {
       expect(headlessResult.data[0].type).toBe(TemplateType.HEADLESS);
     });
 
+    it('should filter templates by a single tag (back-compat string arg)', async () => {
+      const a = await factories.createTemplate({projectId, name: 'A'});
+      const b = await factories.createTemplate({projectId, name: 'B'});
+      await factories.createTemplate({projectId, name: 'C'}); // no tags
+      await prisma.template.update({where: {id: a.id}, data: {tags: {set: ['newsletter']}}});
+      await prisma.template.update({where: {id: b.id}, data: {tags: {set: ['promo']}}});
+
+      const result = await TemplateService.list(projectId, 1, 20, undefined, undefined, undefined, 'newsletter');
+
+      expect(result.total).toBe(1);
+      expect(result.data[0].id).toBe(a.id);
+    });
+
+    it('should filter templates by multiple tags with OR semantics (hasSome)', async () => {
+      const a = await factories.createTemplate({projectId, name: 'A'});
+      const b = await factories.createTemplate({projectId, name: 'B'});
+      const c = await factories.createTemplate({projectId, name: 'C'});
+      await factories.createTemplate({projectId, name: 'D'}); // no tags — excluded
+      await prisma.template.update({where: {id: a.id}, data: {tags: {set: ['newsletter']}}});
+      await prisma.template.update({where: {id: b.id}, data: {tags: {set: ['promo']}}});
+      await prisma.template.update({where: {id: c.id}, data: {tags: {set: ['promo', 'newsletter']}}});
+
+      // Matches any row carrying EITHER tag (a, b, c) — not the tagless one.
+      const result = await TemplateService.list(projectId, 1, 20, undefined, undefined, undefined, [
+        'newsletter',
+        'promo',
+      ]);
+
+      expect(result.total).toBe(3);
+      expect(result.data.map(t => t.id).sort()).toEqual([a.id, b.id, c.id].sort());
+    });
+
+    it('should not de-duplicate rows matching more than one selected tag', async () => {
+      const a = await factories.createTemplate({projectId, name: 'A'});
+      await prisma.template.update({where: {id: a.id}, data: {tags: {set: ['x', 'y']}}});
+
+      // A row carrying both selected tags must appear exactly once.
+      const result = await TemplateService.list(projectId, 1, 20, undefined, undefined, undefined, ['x', 'y']);
+
+      expect(result.total).toBe(1);
+      expect(result.data).toHaveLength(1);
+      expect(result.data[0].id).toBe(a.id);
+    });
+
+    it('should treat an empty tag array as no tag filter', async () => {
+      const a = await factories.createTemplate({projectId, name: 'A'});
+      await factories.createTemplate({projectId, name: 'B'});
+      await prisma.template.update({where: {id: a.id}, data: {tags: {set: ['only']}}});
+
+      const result = await TemplateService.list(projectId, 1, 20, undefined, undefined, undefined, []);
+
+      expect(result.total).toBe(2);
+    });
+
     it('should combine search and type filters', async () => {
       await factories.createTemplate({
         projectId,

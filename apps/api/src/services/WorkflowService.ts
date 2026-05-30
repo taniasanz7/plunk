@@ -25,16 +25,21 @@ export class WorkflowService {
     search?: string,
     sort: ListSort = {field: 'createdAt', direction: 'desc'},
     enabled?: boolean,
-    tag?: string,
+    // Multi-tag filter with OR semantics: a workflow matches if it carries ANY
+    // of the requested tags. Accepts a single tag (back-compat) or an array.
+    tags?: string | string[],
   ): Promise<PaginatedResponse<Workflow>> {
     const skip = (page - 1) * pageSize;
+
+    // Normalize to a non-empty array; an empty list means "no tag filter".
+    const tagList = (Array.isArray(tags) ? tags : tags ? [tags] : []).filter(Boolean);
 
     const where: Prisma.WorkflowWhereInput = {
       projectId,
       // Status facet (Active / Disabled). Undefined = no filter; the
       // `@@index([projectId, enabled])` covers this predicate.
       ...(enabled !== undefined ? {enabled} : {}),
-      ...(tag ? {tags: {has: tag}} : {}),
+      ...(tagList.length > 0 ? {tags: {hasSome: tagList}} : {}),
       ...(search
         ? {
             OR: [

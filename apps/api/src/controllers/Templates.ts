@@ -7,6 +7,7 @@ import {DomainService} from '../services/DomainService.js';
 import {TemplateService} from '../services/TemplateService.js';
 import {CatchAsync} from '../utils/asyncHandler.js';
 import {parseListSort} from '../utils/listSort.js';
+import {parseTagsQuery} from '../utils/tags.js';
 
 @Controller('templates')
 export class Templates {
@@ -18,7 +19,9 @@ export class Templates {
    * - page, pageSize: pagination
    * - search: filter by name/description/subject
    * - type: filter by TemplateType
-   * - tag: filter to templates having this tag
+   * - tag: filter by tag(s) with OR semantics — accepts repeated `?tag=a&tag=b`
+   *   or a CSV `?tag=a,b`; a template matches if it has ANY of them (Prisma
+   *   `tags: {hasSome}`). A single `?tag=a` keeps the old behavior.
    * - sort: name | createdAt | updatedAt (default: createdAt)
    * - dir: asc | desc (default: desc)
    */
@@ -31,10 +34,10 @@ export class Templates {
     const pageSize = Math.min(parseInt(req.query.pageSize as string) || 20, 100);
     const search = req.query.search as string | undefined;
     const type = req.query.type as TemplateType | undefined;
-    const tag = req.query.tag as string | undefined;
+    const tags = parseTagsQuery(req.query.tag);
     const sort = parseListSort(req.query.sort, req.query.dir, {field: 'createdAt', direction: 'desc'});
 
-    const result = await TemplateService.list(auth.projectId!, page, pageSize, search, type, sort, tag);
+    const result = await TemplateService.list(auth.projectId!, page, pageSize, search, type, sort, tags);
 
     return res.status(200).json(result);
   }

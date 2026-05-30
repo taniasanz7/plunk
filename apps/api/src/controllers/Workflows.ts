@@ -7,6 +7,7 @@ import {requireAuth, requireEmailVerified} from '../middleware/auth.js';
 import {WorkflowService} from '../services/WorkflowService.js';
 import {CatchAsync} from '../utils/asyncHandler.js';
 import {parseListSort} from '../utils/listSort.js';
+import {parseTagsQuery} from '../utils/tags.js';
 
 @Controller('workflows')
 export class Workflows {
@@ -18,7 +19,9 @@ export class Workflows {
    * - page, pageSize: pagination
    * - search: filter by name/description
    * - status: active | disabled — maps to the `enabled` boolean facet
-   * - tag: filter to workflows having this tag
+   * - tag: filter by tag(s) with OR semantics — accepts repeated `?tag=a&tag=b`
+   *   or a CSV `?tag=a,b`; a workflow matches if it has ANY of them (Prisma
+   *   `tags: {hasSome}`). A single `?tag=a` keeps the old behavior.
    * - sort: name | createdAt | updatedAt | steps (default: createdAt)
    *   `steps` sorts by the related step count.
    * - dir: asc | desc (default: desc)
@@ -31,7 +34,7 @@ export class Workflows {
     const page = parseInt(req.query.page as string) || 1;
     const pageSize = Math.min(parseInt(req.query.pageSize as string) || 20, 100);
     const search = req.query.search as string | undefined;
-    const tag = req.query.tag as string | undefined;
+    const tags = parseTagsQuery(req.query.tag);
     // `steps` is a workflow-specific sortable column (orders by step count).
     const sort = parseListSort(req.query.sort, req.query.dir, {field: 'createdAt', direction: 'desc'}, ['steps']);
 
@@ -40,7 +43,7 @@ export class Workflows {
     const statusRaw = req.query.status as string | undefined;
     const enabled = statusRaw === 'active' ? true : statusRaw === 'disabled' ? false : undefined;
 
-    const result = await WorkflowService.list(auth.projectId!, page, pageSize, search, sort, enabled, tag);
+    const result = await WorkflowService.list(auth.projectId!, page, pageSize, search, sort, enabled, tags);
 
     return res.status(200).json(result);
   }

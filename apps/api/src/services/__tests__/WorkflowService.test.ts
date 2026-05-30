@@ -259,6 +259,58 @@ describe('WorkflowService', () => {
       expect(all.total).toBe(3);
     });
 
+    it('should filter workflows by a single tag (back-compat string arg)', async () => {
+      const a = await factories.createWorkflow({projectId, name: 'A'});
+      const b = await factories.createWorkflow({projectId, name: 'B'});
+      await factories.createWorkflow({projectId, name: 'C'}); // no tags
+      await prisma.workflow.update({where: {id: a.id}, data: {tags: {set: ['lifecycle']}}});
+      await prisma.workflow.update({where: {id: b.id}, data: {tags: {set: ['promo']}}});
+
+      const result = await WorkflowService.list(projectId, 1, 20, undefined, undefined, undefined, 'lifecycle');
+
+      expect(result.total).toBe(1);
+      expect(result.data[0].id).toBe(a.id);
+    });
+
+    it('should filter workflows by multiple tags with OR semantics (hasSome)', async () => {
+      const a = await factories.createWorkflow({projectId, name: 'A'});
+      const b = await factories.createWorkflow({projectId, name: 'B'});
+      const c = await factories.createWorkflow({projectId, name: 'C'});
+      await factories.createWorkflow({projectId, name: 'D'}); // no tags — excluded
+      await prisma.workflow.update({where: {id: a.id}, data: {tags: {set: ['lifecycle']}}});
+      await prisma.workflow.update({where: {id: b.id}, data: {tags: {set: ['promo']}}});
+      await prisma.workflow.update({where: {id: c.id}, data: {tags: {set: ['promo', 'lifecycle']}}});
+
+      const result = await WorkflowService.list(projectId, 1, 20, undefined, undefined, undefined, [
+        'lifecycle',
+        'promo',
+      ]);
+
+      expect(result.total).toBe(3);
+      expect(result.data.map(w => w.id).sort()).toEqual([a.id, b.id, c.id].sort());
+    });
+
+    it('should not de-duplicate workflows matching more than one selected tag', async () => {
+      const a = await factories.createWorkflow({projectId, name: 'A'});
+      await prisma.workflow.update({where: {id: a.id}, data: {tags: {set: ['x', 'y']}}});
+
+      const result = await WorkflowService.list(projectId, 1, 20, undefined, undefined, undefined, ['x', 'y']);
+
+      expect(result.total).toBe(1);
+      expect(result.data).toHaveLength(1);
+      expect(result.data[0].id).toBe(a.id);
+    });
+
+    it('should treat an empty tag array as no tag filter', async () => {
+      const a = await factories.createWorkflow({projectId, name: 'A'});
+      await factories.createWorkflow({projectId, name: 'B'});
+      await prisma.workflow.update({where: {id: a.id}, data: {tags: {set: ['only']}}});
+
+      const result = await WorkflowService.list(projectId, 1, 20, undefined, undefined, undefined, []);
+
+      expect(result.total).toBe(2);
+    });
+
     it('should sort by step count ascending and descending', async () => {
       // `few` keeps just its TRIGGER step (count 1); `many` gets two more (count 3).
       const few = await factories.createWorkflow({projectId, name: 'Few Steps'});

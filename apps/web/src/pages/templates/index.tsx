@@ -74,7 +74,7 @@ export default function TemplatesPage() {
   const [search, setSearch] = useState('');
   const [searchInput, setSearchInput] = useState('');
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('ALL');
-  const [tagFilter, setTagFilter] = useState<string | null>(null);
+  const [tagFilter, setTagFilter] = useState<string[]>([]);
   const [view, setView] = usePersistentState<DataTableView>(VIEW_STORAGE_KEY, 'card', isDataTableView);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [templateToDelete, setTemplateToDelete] = useState<string | null>(null);
@@ -97,7 +97,7 @@ export default function TemplatesPage() {
   const {data, mutate, isLoading} = useSWR<PaginatedResponse<Template>>(
     `/templates?page=${page}&pageSize=20${search ? `&search=${encodeURIComponent(search)}` : ''}${
       typeFilter !== 'ALL' ? `&type=${typeFilter}` : ''
-    }${tagFilter ? `&tag=${encodeURIComponent(tagFilter)}` : ''}${
+    }${tagFilter.map(t => `&tag=${encodeURIComponent(t)}`).join('')}${
       sortParam ? `&sort=${sortParam}&dir=${dirParam}` : ''
     }`,
     {revalidateOnFocus: false},
@@ -288,16 +288,16 @@ export default function TemplatesPage() {
         header: ({column}) => (
           <DataTableColumnHeader
             column={column}
-            // Single-select facet — mirrors the API's single-value `?tag=` filter
-            // (Prisma `tags: {has}`). Options come from /templates/tags.
+            // Multi-select facet — backed by the API's `?tag=` filter parsed
+            // into `tags: {hasSome}` (OR). Options come from /templates/tags.
             filter={
               <DataTableFacetedFilter
                 title="Tags"
-                multiple={false}
+                multiple
                 options={(tagsData?.tags ?? []).map(t => ({value: t, label: t}))}
-                selected={tagFilter ? [tagFilter] : []}
+                selected={tagFilter}
                 onChange={next => {
-                  setTagFilter(next[0] ?? null);
+                  setTagFilter(next);
                   setPage(1);
                 }}
               />
@@ -404,14 +404,15 @@ export default function TemplatesPage() {
 
   // Whether any search/facet filter is currently narrowing the list. Drives the
   // "no results vs first-run empty" distinction below.
-  const hasActiveFilters = search !== '' || typeFilter !== 'ALL';
+  const hasActiveFilters = search !== '' || typeFilter !== 'ALL' || tagFilter.length > 0;
 
-  // Reset everything that can hide rows (search + type + pagination) so the
-  // user can recover from a filter combination that matched nothing.
+  // Reset everything that can hide rows (search + type + tag + pagination) so
+  // the user can recover from a filter combination that matched nothing.
   const clearFilters = () => {
     setSearchInput('');
     setSearch('');
     setTypeFilter('ALL');
+    setTagFilter([]);
     setPage(1);
   };
 
@@ -502,8 +503,8 @@ export default function TemplatesPage() {
             <TagFilterBar
               tags={tagsData.tags}
               selected={tagFilter}
-              onChange={tag => {
-                setTagFilter(tag);
+              onChange={next => {
+                setTagFilter(next);
                 setPage(1);
               }}
             />

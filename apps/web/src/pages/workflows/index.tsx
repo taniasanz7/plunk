@@ -93,7 +93,7 @@ export default function WorkflowsPage() {
   const [search, setSearch] = useState('');
   const [searchInput, setSearchInput] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('ALL');
-  const [tagFilter, setTagFilter] = useState<string | null>(null);
+  const [tagFilter, setTagFilter] = useState<string[]>([]);
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [workflowToDelete, setWorkflowToDelete] = useState<string | null>(null);
@@ -117,7 +117,7 @@ export default function WorkflowsPage() {
   const {data, mutate, isLoading} = useSWR<PaginatedResponse<WorkflowRow>>(
     `/workflows?page=${page}&pageSize=20${search ? `&search=${encodeURIComponent(search)}` : ''}${
       statusFilter !== 'ALL' ? `&status=${statusFilter}` : ''
-    }${tagFilter ? `&tag=${encodeURIComponent(tagFilter)}` : ''}${
+    }${tagFilter.map(t => `&tag=${encodeURIComponent(t)}`).join('')}${
       sortParam ? `&sort=${sortParam}&dir=${dirParam}` : ''
     }`,
     {revalidateOnFocus: false},
@@ -357,16 +357,16 @@ export default function WorkflowsPage() {
         header: ({column}) => (
           <DataTableColumnHeader
             column={column}
-            // Single-select facet — mirrors the API's single-value `?tag=` filter
-            // (Prisma `tags: {has}`). Options come from /workflows/tags.
+            // Multi-select facet — backed by the API's `?tag=` filter parsed
+            // into `tags: {hasSome}` (OR). Options come from /workflows/tags.
             filter={
               <DataTableFacetedFilter
                 title="Tags"
-                multiple={false}
+                multiple
                 options={(tagsData?.tags ?? []).map(t => ({value: t, label: t}))}
-                selected={tagFilter ? [tagFilter] : []}
+                selected={tagFilter}
                 onChange={next => {
-                  setTagFilter(next[0] ?? null);
+                  setTagFilter(next);
                   setPage(1);
                 }}
               />
@@ -482,7 +482,7 @@ export default function WorkflowsPage() {
 
   // Whether any search/facet filter is currently narrowing the list. Drives the
   // "no results vs first-run empty" distinction below.
-  const hasActiveFilters = search !== '' || statusFilter !== 'ALL' || tagFilter !== null;
+  const hasActiveFilters = search !== '' || statusFilter !== 'ALL' || tagFilter.length > 0;
 
   // Reset everything that can hide rows (search + status + tag + pagination) so
   // the user can recover from a filter combination that matched nothing.
@@ -490,7 +490,7 @@ export default function WorkflowsPage() {
     setSearchInput('');
     setSearch('');
     setStatusFilter('ALL');
-    setTagFilter(null);
+    setTagFilter([]);
     setPage(1);
   };
 
@@ -581,8 +581,8 @@ export default function WorkflowsPage() {
             <TagFilterBar
               tags={tagsData.tags}
               selected={tagFilter}
-              onChange={tag => {
-                setTagFilter(tag);
+              onChange={next => {
+                setTagFilter(next);
                 setPage(1);
               }}
             />
