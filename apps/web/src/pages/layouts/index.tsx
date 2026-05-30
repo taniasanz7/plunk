@@ -22,6 +22,7 @@ import {
   DataTableColumnHeader,
   DataTableViewOptions,
   DataTableViewSwitcher,
+  NoResultsState,
   isDataTableView,
   type DataTableColumnMeta,
   type DataTableView,
@@ -72,7 +73,7 @@ export default function LayoutsPage() {
   const dirParam = sorting[0] ? (sorting[0].desc ? 'desc' : 'asc') : '';
 
   const {data, mutate, isLoading} = useSWR<PaginatedResponse<LayoutWithUsage>>(
-    `/layouts?page=${page}&pageSize=20${search ? `&search=${search}` : ''}${
+    `/layouts?page=${page}&pageSize=20${search ? `&search=${encodeURIComponent(search)}` : ''}${
       sortParam ? `&sort=${sortParam}&dir=${dirParam}` : ''
     }`,
     {revalidateOnFocus: false},
@@ -207,6 +208,19 @@ export default function LayoutsPage() {
 
   const hasData = data && data.data.length > 0;
 
+  // Whether a search is currently narrowing the list. Layouts has no facet/tag
+  // filters, so search is the only thing that can hide rows. Drives the "no
+  // results vs first-run empty" distinction below.
+  const hasActiveFilters = search !== '';
+
+  // Reset search + pagination so the user can recover from a search that matched
+  // nothing.
+  const clearFilters = () => {
+    setSearchInput('');
+    setSearch('');
+    setPage(1);
+  };
+
   return (
     <>
       <NextSeo title="Layouts" />
@@ -283,25 +297,26 @@ export default function LayoutsPage() {
             ) : !hasData ? (
               <Card>
                 <CardContent>
-                  <EmptyState
-                    icon={LayoutPanelTop}
-                    title={search ? 'No layouts match' : 'No layouts yet'}
-                    description={
-                      search
-                        ? 'Try a different search term.'
-                        : 'Create a master template scaffold once, reuse it across all your templates.'
-                    }
-                    action={
-                      !search ? (
+                  {hasActiveFilters ? (
+                    // Layouts exist, but the active search matched none — offer a
+                    // one-click recovery.
+                    <NoResultsState icon={LayoutPanelTop} itemNoun="layouts" onClear={clearFilters} />
+                  ) : (
+                    // Genuinely empty project — first-run state.
+                    <EmptyState
+                      icon={LayoutPanelTop}
+                      title="No layouts yet"
+                      description="Create a master template scaffold once, reuse it across all your templates."
+                      action={
                         <Button asChild>
                           <Link href="/layouts/create">
                             <Plus className="h-4 w-4" />
                             Create Layout
                           </Link>
                         </Button>
-                      ) : undefined
-                    }
-                  />
+                      }
+                    />
+                  )}
                 </CardContent>
               </Card>
             ) : view === 'card' ? (
