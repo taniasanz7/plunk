@@ -28,7 +28,18 @@ const upload = multer({
 export class Contacts {
   /**
    * GET /contacts
-   * List all contacts for the authenticated project with cursor-based pagination
+   * List all contacts for the authenticated project with cursor-based pagination.
+   *
+   * Query params:
+   * - limit:  page size (default 20, max 100)
+   * - cursor: contact id to page after (cursor pagination)
+   * - search: case-insensitive email substring match
+   * - sort:   createdAt | email (default: createdAt). Unknown values fall back to createdAt.
+   * - dir:    asc | desc (default: desc). Unknown values fall back to desc.
+   * - subscribed: "true" | "false" — filter by subscription status (omit for all).
+   *
+   * Cursor pagination stays correct across sorts/directions: the `id` cursor is
+   * positioned inside whichever order is active (see ContactService.list).
    */
   @Get('')
   @Middleware([requireAuth, requireEmailVerified])
@@ -39,7 +50,21 @@ export class Contacts {
     const cursor = req.query.cursor as string | undefined;
     const search = req.query.search as string | undefined;
 
-    const result = await ContactService.list(auth.projectId!, limit, cursor, search);
+    // Whitelist sort/direction so arbitrary client input can never reach Prisma's orderBy.
+    const sortRaw = req.query.sort;
+    const sort: 'createdAt' | 'email' = sortRaw === 'email' ? 'email' : 'createdAt';
+    const dirRaw = req.query.dir;
+    const direction: 'asc' | 'desc' = dirRaw === 'asc' ? 'asc' : 'desc';
+
+    // `subscribed` is a tri-state: present-and-"true"/"false" filters, absent = all.
+    const subscribedRaw = req.query.subscribed;
+    const subscribed = subscribedRaw === 'true' ? true : subscribedRaw === 'false' ? false : undefined;
+
+    const result = await ContactService.list(auth.projectId!, limit, cursor, search, {
+      sort,
+      direction,
+      subscribed,
+    });
 
     return res.status(200).json(result);
   }

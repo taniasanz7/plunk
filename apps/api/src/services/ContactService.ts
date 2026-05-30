@@ -10,15 +10,39 @@ export class ContactService {
   /**
    * Get all contacts for a project with cursor-based pagination
    * Uses cursor pagination for better performance with large datasets
+   *
+   * Sorting & cursor interaction:
+   *   The cursor is always a contact `id`. Prisma positions the next page by
+   *   finding that id's row inside the active `orderBy` and taking the rows
+   *   after it, so the cursor stays valid for whichever sort the caller picked.
+   *   `id` is appended as a stable tiebreaker on every sort so pages can never
+   *   skip or duplicate rows when the primary sort key has duplicates.
+   *
+   *   - `createdAt` (default): backed by the default scan; both directions
+   *     supported by flipping the createdAt + id tiebreaker together.
+   *   - `email`: unique per project (`@@unique([projectId, email])`), so it is
+   *     effectively a unique sort key; the composite index on
+   *     `(projectId, email)` keeps it fast.
+   *
+   *   A `subscribed` filter is index-backed by `@@index([projectId, subscribed])`.
    */
   public static async list(
     projectId: string,
     limit = 20,
     cursor?: string,
     search?: string,
+    options?: {
+      sort?: 'createdAt' | 'email';
+      direction?: 'asc' | 'desc';
+      subscribed?: boolean;
+    },
   ): Promise<CursorPaginatedResponse<Contact>> {
+    const sort = options?.sort ?? 'createdAt';
+    const direction = options?.direction ?? 'desc';
+
     const where: Prisma.ContactWhereInput = {
       projectId,
+      ...(options?.subscribed !== undefined ? {subscribed: options.subscribed} : {}),
       ...(search
         ? {
             email: {
@@ -29,18 +53,22 @@ export class ContactService {
         : {}),
     };
 
+    // Build a composite orderBy: the chosen sort key first, then `id` as a
+    // stable tiebreaker. The tiebreaker direction follows the primary so the
+    // ordering is a single monotonic sequence — required for the `{id}` cursor
+    // to skip cleanly without dropping or repeating rows (see method doc above).
+    const orderBy: Prisma.ContactOrderByWithRelationInput[] =
+      sort === 'email'
+        ? [{email: direction}, {id: direction}]
+        : [{createdAt: direction}, {id: direction}];
+
     // Fetch one extra to determine if there are more results
-    // Use composite ordering (createdAt + id) to ensure stable pagination
-    // This prevents skipping records when multiple contacts have the same createdAt
     const contacts = await prisma.contact.findMany({
       where,
       take: limit + 1,
       skip: cursor ? 1 : 0,
       cursor: cursor ? {id: cursor} : undefined,
-      orderBy: [
-        {createdAt: 'desc'},
-        {id: 'desc'}, // Secondary sort by id for stable cursor pagination
-      ],
+      orderBy,
     });
 
     const hasMore = contacts.length > limit;

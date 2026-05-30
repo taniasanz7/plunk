@@ -106,6 +106,10 @@ export const ContactSchemas = {
       filter: z
         .object({
           search: z.string().max(255).optional(),
+          // Mirrors the contacts list `?subscribed=` filter so "select all
+          // matching" can be scoped to the same subscription-status filter the
+          // user has active (omit = both).
+          subscribed: z.boolean().optional(),
         })
         .default({}),
       excludeIds: z.array(uuid).max(10000).optional(),

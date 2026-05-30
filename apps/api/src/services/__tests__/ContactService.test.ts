@@ -496,6 +496,146 @@ describe('ContactService - Duplicate Prevention & Data Merging', () => {
     });
   });
 
+  describe('list — sort, direction, subscribed filter & cursor', () => {
+    // Helper: create a contact at an explicit createdAt so ordering is deterministic.
+    const createAt = (email: string, daysAgo: number, subscribed = true) =>
+      prisma.contact.create({
+        data: {
+          projectId,
+          email,
+          subscribed,
+          createdAt: new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000),
+        },
+      });
+
+    it('defaults to createdAt desc (newest first)', async () => {
+      await createAt('old@example.com', 3);
+      await createAt('mid@example.com', 2);
+      await createAt('new@example.com', 1);
+
+      const result = await ContactService.list(projectId, 20);
+
+      expect(result.data.map(c => c.email)).toEqual([
+        'new@example.com',
+        'mid@example.com',
+        'old@example.com',
+      ]);
+      expect(result.total).toBe(3);
+    });
+
+    it('supports createdAt asc (oldest first)', async () => {
+      await createAt('old@example.com', 3);
+      await createAt('mid@example.com', 2);
+      await createAt('new@example.com', 1);
+
+      const result = await ContactService.list(projectId, 20, undefined, undefined, {
+        sort: 'createdAt',
+        direction: 'asc',
+      });
+
+      expect(result.data.map(c => c.email)).toEqual([
+        'old@example.com',
+        'mid@example.com',
+        'new@example.com',
+      ]);
+    });
+
+    it('supports email asc / desc ordering', async () => {
+      await factories.createContact({projectId, email: 'charlie@example.com'});
+      await factories.createContact({projectId, email: 'alice@example.com'});
+      await factories.createContact({projectId, email: 'bob@example.com'});
+
+      const asc = await ContactService.list(projectId, 20, undefined, undefined, {
+        sort: 'email',
+        direction: 'asc',
+      });
+      expect(asc.data.map(c => c.email)).toEqual([
+        'alice@example.com',
+        'bob@example.com',
+        'charlie@example.com',
+      ]);
+
+      const desc = await ContactService.list(projectId, 20, undefined, undefined, {
+        sort: 'email',
+        direction: 'desc',
+      });
+      expect(desc.data.map(c => c.email)).toEqual([
+        'charlie@example.com',
+        'bob@example.com',
+        'alice@example.com',
+      ]);
+    });
+
+    it('filters by subscribed=true / false and counts only the filtered set', async () => {
+      await factories.createContact({projectId, email: 'sub1@example.com', subscribed: true});
+      await factories.createContact({projectId, email: 'sub2@example.com', subscribed: true});
+      await factories.createContact({projectId, email: 'unsub@example.com', subscribed: false});
+
+      const subscribed = await ContactService.list(projectId, 20, undefined, undefined, {subscribed: true});
+      expect(subscribed.total).toBe(2);
+      expect(subscribed.data.every(c => c.subscribed)).toBe(true);
+
+      const unsubscribed = await ContactService.list(projectId, 20, undefined, undefined, {subscribed: false});
+      expect(unsubscribed.total).toBe(1);
+      expect(unsubscribed.data.every(c => !c.subscribed)).toBe(true);
+
+      const all = await ContactService.list(projectId, 20);
+      expect(all.total).toBe(3);
+    });
+
+    it('combines search + subscribed filter', async () => {
+      await factories.createContact({projectId, email: 'alice@acme.com', subscribed: true});
+      await factories.createContact({projectId, email: 'alice@other.com', subscribed: false});
+      await factories.createContact({projectId, email: 'bob@acme.com', subscribed: true});
+
+      const result = await ContactService.list(projectId, 20, undefined, 'alice', {subscribed: true});
+      expect(result.total).toBe(1);
+      expect(result.data[0]?.email).toBe('alice@acme.com');
+    });
+
+    it('paginates by cursor without skipping or duplicating across sorts', async () => {
+      // 5 contacts, newest → oldest: e, d, c, b, a
+      await createAt('a@example.com', 5);
+      await createAt('b@example.com', 4);
+      await createAt('c@example.com', 3);
+      await createAt('d@example.com', 2);
+      await createAt('e@example.com', 1);
+
+      const page1 = await ContactService.list(projectId, 2); // createdAt desc default
+      expect(page1.data.map(c => c.email)).toEqual(['e@example.com', 'd@example.com']);
+      expect(page1.hasMore).toBe(true);
+
+      const page2 = await ContactService.list(projectId, 2, page1.cursor);
+      expect(page2.data.map(c => c.email)).toEqual(['c@example.com', 'b@example.com']);
+      expect(page2.hasMore).toBe(true);
+
+      const page3 = await ContactService.list(projectId, 2, page2.cursor);
+      expect(page3.data.map(c => c.email)).toEqual(['a@example.com']);
+      expect(page3.hasMore).toBe(false);
+
+      // No id appears twice across pages.
+      const seen = [...page1.data, ...page2.data, ...page3.data].map(c => c.id);
+      expect(new Set(seen).size).toBe(5);
+    });
+
+    it('cursor pages correctly under email asc ordering', async () => {
+      await factories.createContact({projectId, email: 'a@example.com'});
+      await factories.createContact({projectId, email: 'b@example.com'});
+      await factories.createContact({projectId, email: 'c@example.com'});
+
+      const page1 = await ContactService.list(projectId, 2, undefined, undefined, {sort: 'email', direction: 'asc'});
+      expect(page1.data.map(c => c.email)).toEqual(['a@example.com', 'b@example.com']);
+      expect(page1.hasMore).toBe(true);
+
+      const page2 = await ContactService.list(projectId, 2, page1.cursor, undefined, {
+        sort: 'email',
+        direction: 'asc',
+      });
+      expect(page2.data.map(c => c.email)).toEqual(['c@example.com']);
+      expect(page2.hasMore).toBe(false);
+    });
+  });
+
   describe('Bulk Contact Operations', () => {
     describe('bulkSubscribe', () => {
       it('should subscribe multiple unsubscribed contacts', async () => {

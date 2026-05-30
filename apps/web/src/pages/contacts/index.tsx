@@ -17,10 +17,26 @@ import {
 import type {Contact} from '@plunk/db';
 import type {CursorPaginatedResponse} from '@plunk/types';
 import {EmptyState} from '@plunk/ui';
+import {
+  getCoreRowModel,
+  useReactTable,
+  type ColumnDef,
+  type SortingState,
+  type VisibilityState,
+} from '@tanstack/react-table';
 import {DashboardLayout} from '../../components/DashboardLayout';
 import {KeyValueEditor} from '../../components/KeyValueEditor';
+import {
+  DataTable,
+  DataTableColumnHeader,
+  DataTableFacetedFilter,
+  DataTableViewOptions,
+  NoResultsState,
+  type DataTableColumnMeta,
+} from '../../components/data-table';
 import {network} from '../../lib/network';
 import {formatRelativeTime} from '../../lib/dateUtils';
+import {useColumnVisibility} from '../../lib/hooks/useColumnVisibility';
 import {
   AlertTriangle,
   Check,
@@ -43,17 +59,53 @@ import {
 } from 'lucide-react';
 import {NextSeo} from 'next-seo';
 import Link from 'next/link';
-import {useEffect, useRef, useState} from 'react';
+import {useEffect, useMemo, useRef, useState} from 'react';
 import {toast} from 'sonner';
 import useSWR from 'swr';
 import {ContactSchemas} from '@plunk/shared';
 import dayjs from 'dayjs';
 
+const COLUMNS_STORAGE_KEY = 'plunk:contacts:columns';
+
+// Subscribed status filter — single-select faceted filter mapped onto the
+// backend's `?subscribed=true|false` query param. Absent = both.
+const STATUS_OPTIONS = [
+  {value: 'true', label: 'Subscribed'},
+  {value: 'false', label: 'Unsubscribed'},
+] as const;
+
+// Email + Actions are locked-visible (see lockedColumnIds below); `select` is
+// also locked. First name / last name default hidden — they only have values
+// for contacts that carry those `data` keys, so they start collapsed and the
+// user opts them in via the Columns menu (owner asked specifically to be able
+// to display first name).
+const DEFAULT_COLUMN_VISIBILITY: VisibilityState = {
+  select: true,
+  email: true,
+  firstName: false,
+  lastName: false,
+  subscribed: true,
+  createdAt: true,
+  actions: true,
+};
+
+// "First name" / "Last name" live in the free-form `Contact.data` JSON, not as
+// real columns (see Prisma schema). Read them defensively for the optional
+// columns — any contact may or may not carry them.
+function readDataString(contact: Contact, key: string): string | null {
+  const data = contact.data;
+  if (data && typeof data === 'object' && !Array.isArray(data)) {
+    const value = (data as Record<string, unknown>)[key];
+    if (typeof value === 'string' && value.trim() !== '') return value;
+    if (typeof value === 'number') return String(value);
+  }
+  return null;
+}
+
 export default function ContactsPage() {
   const [cursor, setCursor] = useState<string | undefined>(undefined);
   const [cursorHistory, setCursorHistory] = useState<(string | undefined)[]>([undefined]);
   const [currentPage, setCurrentPage] = useState(0);
-  const [contacts, setContacts] = useState<Contact[]>([]);
   const [search, setSearch] = useState('');
   const [searchInput, setSearchInput] = useState('');
   const [showCreateDialog, setShowCreateDialog] = useState(false);
@@ -66,19 +118,62 @@ export default function ContactsPage() {
   const [excludedContacts, setExcludedContacts] = useState<Set<string>>(new Set());
   const [showBulkActionsDialog, setShowBulkActionsDialog] = useState(false);
   const [bulkOperation, setBulkOperation] = useState<'subscribe' | 'unsubscribe' | 'delete' | null>(null);
+  // Status filter ('true' | 'false') mapped to ?subscribed=. null = both.
+  const [statusFilter, setStatusFilter] = useState<'true' | 'false' | null>(null);
+  // Server-side sort. Only createdAt + email are backend-sortable without
+  // breaking the `{id}` cursor (see ContactService.list). Tanstack mirrors this
+  // via manualSorting; the URL stays authoritative.
+  const [sorting, setSorting] = useState<SortingState>([{id: 'createdAt', desc: true}]);
+  const [columnVisibility, setColumnVisibility] = useColumnVisibility(COLUMNS_STORAGE_KEY, DEFAULT_COLUMN_VISIBILITY);
   const pageSize = 50;
 
-  const {data, mutate, isLoading} = useSWR<CursorPaginatedResponse<Contact>>(
-    `/contacts?limit=${pageSize}${cursor ? `&cursor=${cursor}` : ''}${search ? `&search=${search}` : ''}`,
-    {revalidateOnFocus: false},
+  // Reset to the first page whenever anything that changes the result set or its
+  // ordering changes — cursor history is only meaningful within one sort+filter.
+  //
+  // NOTE: this deliberately does NOT touch any "current rows" state. The rows are
+  // derived straight from the SWR `data` for the active fetch key (see `contacts`
+  // below) — never mirrored into component state. Mirroring was the source of the
+  // stuck "No contacts yet" bug: `resetPaging()` blanked the mirror at a moment
+  // when the repopulating effect wouldn't re-fire (SWR served the reverted key
+  // from cache, so neither `data` nor `cursor` changed), latching the empty state
+  // until a hard refresh. Deriving from `data` makes that impossible.
+  const resetPaging = () => {
+    setCursor(undefined);
+    setCursorHistory([undefined]);
+    setCurrentPage(0);
+    setSelectedContacts(new Set());
+    setSelectAllMatching(false);
+    setExcludedContacts(new Set());
+  };
+
+  // The "unsorted" tanstack state (`sorting === []`) intentionally falls back to
+  // the default ordering (createdAt desc) rather than dropping the sort params —
+  // the backend always needs a deterministic order for the `{id}` cursor, and an
+  // empty/order-less fetch would return rows in an arbitrary order (or none in a
+  // way the UI can reason about). So an unsorted header click simply restores the
+  // default view instead of wedging the table.
+  const sortParam = sorting[0]?.id === 'email' ? 'email' : 'createdAt';
+  const dirParam = sorting[0] ? (sorting[0].desc ? 'desc' : 'asc') : 'desc';
+
+  const {data, mutate, isLoading, isValidating} = useSWR<CursorPaginatedResponse<Contact>>(
+    `/contacts?limit=${pageSize}${cursor ? `&cursor=${cursor}` : ''}${
+      search ? `&search=${encodeURIComponent(search)}` : ''
+    }${statusFilter ? `&subscribed=${statusFilter}` : ''}&sort=${sortParam}&dir=${dirParam}`,
+    {revalidateOnFocus: false, keepPreviousData: true},
   );
 
-    useEffect(() => {
-    if (data) {
-      setContacts(data.data);
-      if (!cursor) {
-        setTotalCount(data.total || data.data.length);
-      }
+  // Rows for the current page are derived directly from SWR — never copied into
+  // component state — so they can never get out of sync with the active fetch
+  // key. `keepPreviousData` keeps the prior page visible during a refetch instead
+  // of flashing empty.
+  const contacts = useMemo<Contact[]>(() => data?.data ?? [], [data]);
+
+  // Track the total only on the first page (the backend only counts there for
+  // perf). Keep it in state so the count survives paging into later pages where
+  // the response carries `total: 0`.
+  useEffect(() => {
+    if (data && !cursor) {
+      setTotalCount(data.total || data.data.length);
     }
   }, [data, cursor]);
 
@@ -86,16 +181,17 @@ export default function ContactsPage() {
     if (searchInput === search) return;
     const timer = setTimeout(() => {
       setSearch(searchInput);
-      setCursor(undefined);
-      setCursorHistory([undefined]);
-      setCurrentPage(0);
-      setContacts([]);
-      setSelectedContacts(new Set());
-      setSelectAllMatching(false);
-      setExcludedContacts(new Set());
+      resetPaging();
     }, 350);
     return () => clearTimeout(timer);
+    // resetPaging only calls state setters (stable identities), so omitting it is safe.
   }, [searchInput, search]);
+
+  // Changing the status filter or the sort key/direction reshapes or reorders
+  // the result set, which invalidates the cursor history — restart at page 0.
+  useEffect(() => {
+    resetPaging();
+  }, [statusFilter, sortParam, dirParam]);
 
   const handleNextPage = () => {
     if (data?.cursor) {
@@ -219,6 +315,186 @@ export default function ContactsPage() {
     }
   };
 
+  // Whether any search/status filter is narrowing the list. Drives the
+  // "no results vs first-run empty" distinction + the Clear-filters recovery.
+  const hasActiveFilters = search !== '' || statusFilter !== null;
+
+  // Reset search + status filter (sort intentionally left alone — it never
+  // hides rows) so the user can recover from a filter that matched nothing.
+  const clearFilters = () => {
+    setSearchInput('');
+    setSearch('');
+    setStatusFilter(null);
+    resetPaging();
+  };
+
+  // Tanstack column model for the desktop table. The selection + bulk model is
+  // the contacts-specific "select all matching" machinery (excludeIds, query
+  // selectors) — NOT tanstack rowSelection — so the checkbox column wires
+  // straight into the existing handlers and is kept out of tanstack's state.
+  const columns = useMemo<Array<ColumnDef<Contact, unknown>>>(
+    () => [
+      {
+        id: 'select',
+        enableSorting: false,
+        enableHiding: false, // Selection column is locked-visible.
+        meta: {label: 'Select', headClassName: 'w-12', cellClassName: 'w-12'} satisfies DataTableColumnMeta,
+        header: () => (
+          <Checkbox aria-label="Select all rows on this page" checked={allOnPageSelected} onCheckedChange={handleSelectAll} />
+        ),
+        cell: ({row}) => (
+          <Checkbox
+            aria-label={`Select ${row.original.email}`}
+            checked={isContactSelected(row.original.id)}
+            onCheckedChange={() => handleSelectContact(row.original.id)}
+          />
+        ),
+      },
+      {
+        id: 'email',
+        accessorKey: 'email',
+        enableHiding: false, // Email column is locked-visible.
+        // Email is unique per project, so the backend can sort by it while the
+        // `{id}` cursor stays stable (see ContactService.list).
+        meta: {label: 'Email'} satisfies DataTableColumnMeta,
+        header: ({column}) => <DataTableColumnHeader column={column}>Email</DataTableColumnHeader>,
+        cell: ({row}) => (
+          <div className="flex items-center gap-2">
+            {row.original.subscribed ? (
+              <MailCheck className="h-4 w-4 text-green-600" />
+            ) : (
+              <MailX className="h-4 w-4 text-red-600" />
+            )}
+            <Link
+              href={`/contacts/${row.original.id}`}
+              className="text-sm font-medium text-neutral-900 hover:text-neutral-700 focus-visible:outline-none focus-visible:underline"
+            >
+              {row.original.email}
+            </Link>
+          </div>
+        ),
+      },
+      {
+        id: 'firstName',
+        enableSorting: false, // Lives in Contact.data JSON — not server-sortable.
+        meta: {label: 'First name'} satisfies DataTableColumnMeta,
+        header: ({column}) => <DataTableColumnHeader column={column}>First name</DataTableColumnHeader>,
+        cell: ({row}) => {
+          const value = readDataString(row.original, 'firstName');
+          return value ? (
+            <span className="text-sm text-neutral-700">{value}</span>
+          ) : (
+            <span className="text-sm text-neutral-400">—</span>
+          );
+        },
+      },
+      {
+        id: 'lastName',
+        enableSorting: false, // Lives in Contact.data JSON — not server-sortable.
+        meta: {label: 'Last name'} satisfies DataTableColumnMeta,
+        header: ({column}) => <DataTableColumnHeader column={column}>Last name</DataTableColumnHeader>,
+        cell: ({row}) => {
+          const value = readDataString(row.original, 'lastName');
+          return value ? (
+            <span className="text-sm text-neutral-700">{value}</span>
+          ) : (
+            <span className="text-sm text-neutral-400">—</span>
+          );
+        },
+      },
+      {
+        id: 'subscribed',
+        accessorKey: 'subscribed',
+        enableSorting: false, // Status is faceted-filtered, not sorted.
+        meta: {label: 'Status'} satisfies DataTableColumnMeta,
+        header: ({column}) => (
+          <DataTableColumnHeader
+            column={column}
+            filter={
+              <DataTableFacetedFilter
+                title="Status"
+                multiple={false}
+                options={STATUS_OPTIONS.map(o => ({value: o.value, label: o.label}))}
+                selected={statusFilter ? [statusFilter] : []}
+                onChange={next => setStatusFilter((next[0] as 'true' | 'false') ?? null)}
+              />
+            }
+          >
+            Status
+          </DataTableColumnHeader>
+        ),
+        cell: ({row}) => (
+          <span
+            className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+              row.original.subscribed ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+            }`}
+          >
+            {row.original.subscribed ? 'Subscribed' : 'Unsubscribed'}
+          </span>
+        ),
+      },
+      {
+        id: 'createdAt',
+        accessorKey: 'createdAt',
+        // The cursor's natural sort key — first click surfaces newest first.
+        sortDescFirst: true,
+        meta: {label: 'Created'} satisfies DataTableColumnMeta,
+        header: ({column}) => <DataTableColumnHeader column={column}>Created</DataTableColumnHeader>,
+        cell: ({row}) => (
+          <div className="group relative inline-block cursor-help text-sm text-neutral-500 whitespace-nowrap">
+            {formatRelativeTime(row.original.createdAt)}
+            <div className="hidden group-hover:block absolute z-10 w-48 p-2 bg-neutral-900 text-white text-xs rounded shadow-md bottom-full left-1/2 transform -translate-x-1/2 mb-1 whitespace-nowrap">
+              {dayjs(row.original.createdAt).format('DD MMMM YYYY, hh:mm')}
+            </div>
+          </div>
+        ),
+      },
+      {
+        id: 'actions',
+        enableSorting: false,
+        enableHiding: false, // Actions column is locked-visible.
+        meta: {label: 'Actions', headClassName: 'text-right', cellClassName: 'text-right'} satisfies DataTableColumnMeta,
+        header: () => <span className="flex justify-end">Actions</span>,
+        cell: ({row}) => (
+          <div className="flex items-center justify-end gap-2">
+            <Button asChild variant="ghost" size="sm" title="Edit contact">
+              <Link href={`/contacts/${row.original.id}`} aria-label="Edit contact">
+                <Edit className="h-4 w-4" />
+              </Link>
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              title="Delete contact"
+              aria-label="Delete contact"
+              onClick={() => promptDelete(row.original.id)}
+            >
+              <Trash2 className="h-4 w-4" />
+            </Button>
+          </div>
+        ),
+      },
+    ],
+    // Recreated each render so the select/status closures stay fresh; cheap.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [statusFilter, allOnPageSelected, selectAllMatching, excludedContacts, selectedContacts, contacts],
+  );
+
+  const table = useReactTable<Contact>({
+    data: contacts,
+    columns,
+    state: {sorting, columnVisibility},
+    onSortingChange: setSorting,
+    onColumnVisibilityChange: setColumnVisibility,
+    // Selection is driven by the contacts-specific model, not tanstack.
+    enableRowSelection: false,
+    enableMultiSort: false,
+    manualSorting: true, // Backend sorts; client mirrors ?sort=&dir=.
+    manualPagination: true, // Cursor pagination is owned by the page.
+    getCoreRowModel: getCoreRowModel(),
+    getRowId: row => row.id,
+  });
+
   return (
     <>
       <NextSeo title="Contacts" />
@@ -275,10 +551,7 @@ export default function ContactsPage() {
                         onClick={() => {
                           setSearchInput('');
                           setSearch('');
-                          setCursor(undefined);
-                          setCursorHistory([undefined]);
-                          setCurrentPage(0);
-                          setContacts([]);
+                          resetPaging();
                         }}
                         className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded-sm p-0.5 text-neutral-400 transition-colors hover:text-neutral-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-400"
                       >
@@ -288,9 +561,13 @@ export default function ContactsPage() {
                   </div>
                   {totalCount > 0 && (
                     <span className="hidden sm:inline text-sm text-neutral-500 tabular-nums whitespace-nowrap">
-                      {totalCount.toLocaleString()} {search ? 'matching' : 'total'}
+                      {totalCount.toLocaleString()} {hasActiveFilters ? 'matching' : 'total'}
                     </span>
                   )}
+                  {/* Columns visibility menu — Email + Actions locked-visible. */}
+                  <div className="shrink-0">
+                    <DataTableViewOptions table={table} lockedColumnIds={['select', 'email', 'actions']} />
+                  </div>
                 </div>
               ) : (
                 <div className="flex items-center justify-between gap-3 w-full">
@@ -342,108 +619,46 @@ export default function ContactsPage() {
               )}
             </div>
             <CardContent className="p-0">
-              {isLoading && contacts.length === 0 ? (
+              {/* Show the spinner whenever there are no rows to display AND a
+                  fetch is still settling — covers both the very first load
+                  (`!data`) and any in-flight refetch after a sort/filter change
+                  whose new key isn't cached yet. Crucially, we only fall through
+                  to an empty state once `data` has actually arrived and is no
+                  longer validating, so a transient zero-rows moment never gets
+                  mistaken for the genuine first-run "No contacts yet". */}
+              {contacts.length === 0 && (isLoading || isValidating || !data) ? (
                 <div className="flex items-center justify-center py-16">
                   <IconSpinner />
                 </div>
               ) : contacts.length === 0 ? (
                 <div className="px-6 py-12">
-                  <EmptyState
-                    icon={Mail}
-                    title={search ? 'No contacts match' : 'No contacts yet'}
-                    description={search ? 'Try a different search term.' : 'Add contacts to start tracking engagement.'}
-                    action={
-                      !search ? (
+                  {hasActiveFilters ? (
+                    // Items exist but the active search/status filters matched none —
+                    // offer one-click recovery (Clear filters resets search + status).
+                    <NoResultsState icon={Mail} itemNoun="contacts" onClear={clearFilters} />
+                  ) : (
+                    // Genuinely empty project — first-run state.
+                    <EmptyState
+                      icon={Mail}
+                      title="No contacts yet"
+                      description="Add contacts to start tracking engagement."
+                      action={
                         <Button onClick={() => setShowCreateDialog(true)}>
                           <Plus className="h-4 w-4" />
                           Add Contact
                         </Button>
-                      ) : undefined
-                    }
-                  />
+                      }
+                    />
+                  )}
                 </div>
               ) : (
                 <>
-                  {/* Desktop Table View - Hidden on mobile */}
+                  {/* Desktop Table View (tanstack-driven) - Hidden on mobile. The
+                      shared DataTable owns header sort indicators + the Status
+                      facet + column visibility; selection wires into the existing
+                      "select all matching" model via the checkbox column. */}
                   <div className="hidden md:block overflow-x-auto">
-                    <table className="w-full">
-                      <thead className="bg-neutral-50 border-b border-neutral-200">
-                        <tr>
-                          <th className="px-6 py-3 text-left w-12">
-                            <Checkbox
-                              checked={allOnPageSelected}
-                              onCheckedChange={handleSelectAll}
-                            />
-                          </th>
-                          <th className="px-6 py-3 text-left text-xs font-medium text-neutral-500 uppercase tracking-wider">
-                            Email
-                          </th>
-                          <th className="px-6 py-3 text-left text-xs font-medium text-neutral-500 uppercase tracking-wider">
-                            Status
-                          </th>
-                          <th className="px-6 py-3 text-left text-xs font-medium text-neutral-500 uppercase tracking-wider">
-                            Created
-                          </th>
-                          <th className="px-6 py-3 text-right text-xs font-medium text-neutral-500 uppercase tracking-wider">
-                            Actions
-                          </th>
-                        </tr>
-                      </thead>
-                      <tbody className="bg-white divide-y divide-neutral-200">
-                        {contacts.map(contact => (
-                          <tr key={contact.id} className="hover:bg-neutral-50 transition-colors">
-                            <td className="px-6 py-4 whitespace-nowrap">
-                              <Checkbox
-                                checked={isContactSelected(contact.id)}
-                                onCheckedChange={() => handleSelectContact(contact.id)}
-                              />
-                            </td>
-                            <td className="px-6 py-4 whitespace-nowrap">
-                              <div className="flex items-center gap-2">
-                                {contact.subscribed ? (
-                                  <MailCheck className="h-4 w-4 text-green-600" />
-                                ) : (
-                                  <MailX className="h-4 w-4 text-red-600" />
-                                )}
-                                <Link
-                                  href={`/contacts/${contact.id}`}
-                                  className="text-sm font-medium text-neutral-900 hover:text-neutral-700 focus-visible:outline-none focus-visible:underline"
-                                >
-                                  {contact.email}
-                                </Link>
-                              </div>
-                            </td>
-                            <td className="px-6 py-4 whitespace-nowrap">
-                              <span
-                                className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                                  contact.subscribed ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
-                                }`}
-                              >
-                                {contact.subscribed ? 'Subscribed' : 'Unsubscribed'}
-                              </span>
-                            </td>
-                            <td className="px-6 py-4 whitespace-nowrap text-sm text-neutral-500">
-                              <div className="group relative inline-block cursor-help">
-                                {formatRelativeTime(contact.createdAt)}
-                                <div className="hidden group-hover:block absolute z-10 w-48 p-2 bg-neutral-900 text-white text-xs rounded shadow-md bottom-full left-1/2 transform -translate-x-1/2 mb-1 whitespace-nowrap">
-                                  {dayjs(contact.createdAt).format('DD MMMM YYYY, hh:mm')}
-                                </div>
-                              </div>
-                            </td>
-                            <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                              <div className="flex items-center justify-end gap-2">
-                                <Button asChild variant="ghost" size="sm">
-                                  <Link href={`/contacts/${contact.id}`}><Edit className="h-4 w-4" /></Link>
-                                </Button>
-                                <Button variant="ghost" size="sm" onClick={() => promptDelete(contact.id)}>
-                                  <Trash2 className="h-4 w-4" />
-                                </Button>
-                              </div>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                    <DataTable table={table} />
                   </div>
 
                   {/* Mobile Card View - Only visible on mobile */}
@@ -512,7 +727,12 @@ export default function ContactsPage() {
                         <Button
                           variant="outline"
                           onClick={handlePreviousPage}
-                          disabled={currentPage === 0 || isLoading}
+                          // Lock during an in-flight fetch too: with
+                          // `keepPreviousData` the page stays visible (so
+                          // `isLoading` is false on transitions) — `isValidating`
+                          // is what guards against a second click advancing the
+                          // cursor off a stale `data.cursor` and skipping rows.
+                          disabled={currentPage === 0 || isLoading || isValidating}
                           className="flex-1 sm:flex-none"
                         >
                           <ChevronLeft className="h-4 w-4" />
@@ -521,7 +741,7 @@ export default function ContactsPage() {
                         <Button
                           variant="outline"
                           onClick={handleNextPage}
-                          disabled={!data?.hasMore || isLoading}
+                          disabled={!data?.hasMore || isLoading || isValidating}
                           className="flex-1 sm:flex-none"
                         >
                           <span className="hidden sm:inline">Next</span>
@@ -549,7 +769,18 @@ export default function ContactsPage() {
           operation={bulkOperation}
           selector={
             selectAllMatching
-              ? {mode: 'query', filter: search ? {search} : {}, excludeIds: Array.from(excludedContacts)}
+              ? {
+                  mode: 'query',
+                  // Carry BOTH active filters so "select all matching" targets
+                  // exactly the visible set. Dropping `subscribed` here would make
+                  // e.g. "filter to Unsubscribed → select all → Subscribe" act on
+                  // every contact, not just the unsubscribed ones.
+                  filter: {
+                    ...(search ? {search} : {}),
+                    ...(statusFilter ? {subscribed: statusFilter === 'true'} : {}),
+                  },
+                  excludeIds: Array.from(excludedContacts),
+                }
               : {mode: 'ids', contactIds: Array.from(selectedContacts)}
           }
           targetCount={effectiveSelectionCount}
@@ -984,7 +1215,7 @@ function ImportContactsDialog({open, onOpenChange, onSuccess}: ImportContactsDia
 
 type BulkSelector =
   | {mode: 'ids'; contactIds: string[]}
-  | {mode: 'query'; filter: {search?: string}; excludeIds: string[]};
+  | {mode: 'query'; filter: {search?: string; subscribed?: boolean}; excludeIds: string[]};
 
 interface BulkActionsDialogProps {
   open: boolean;
