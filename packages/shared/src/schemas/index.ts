@@ -183,6 +183,10 @@ export const SegmentSchemas = {
   }),
 };
 
+// Free-form organizational tag (case-sensitive, trimmed by the client; matched exactly on filter).
+const tag = z.string().min(1).max(50);
+const tagsArray = z.array(tag).max(50);
+
 export const TemplateSchemas = {
   create: z.object({
     name: z.string().min(1).max(100),
@@ -193,6 +197,7 @@ export const TemplateSchemas = {
     fromName: z.string().max(100).nullish(),
     replyTo: email.nullish(),
     type: z.nativeEnum(TemplateType).default('MARKETING'),
+    tags: tagsArray.optional(),
   }),
   update: z.object({
     name: z.string().min(1).max(100).optional(),
@@ -203,18 +208,21 @@ export const TemplateSchemas = {
     fromName: z.string().max(100).nullish(),
     replyTo: email.nullish(),
     type: z.nativeEnum(TemplateType).optional(),
+    tags: tagsArray.optional(),
   }),
   // Bulk operation payload for POST /templates/bulk-update.
   //
-  // Currently the only supported operation is `delete: true` (bulk delete).
-  // The schema is intentionally kept open-ended so future tag-related fields
-  // (e.g. `addTags?: string[]`, `removeTags?: string[]`) can stack onto the
-  // same endpoint once a `Template.tags` column exists — without changing the
-  // request shape callers already depend on. Keep this as the single source of
-  // truth for what bulk operations the endpoint accepts.
+  // Supported operations:
+  // - `delete: true` — bulk delete (guarded by the workflow-step reference check).
+  // - `addTags` / `removeTags` — union/subtract the given tags on every selected
+  //   row. Both can be sent in one call; they're applied per-row inside the same
+  //   transaction. Keep this as the single source of truth for what bulk
+  //   operations the endpoint accepts.
   bulkUpdate: z.object({
     ids: z.array(uuid).min(1).max(1000),
     delete: z.boolean().optional(),
+    addTags: tagsArray.optional(),
+    removeTags: tagsArray.optional(),
   }),
 };
 
@@ -225,6 +233,7 @@ export const WorkflowSchemas = {
     eventName: z.string().min(1),
     allowReentry: z.boolean().optional(),
     enabled: z.boolean().default(false),
+    tags: tagsArray.optional(),
   }),
   update: z.object({
     name: z.string().min(1).max(100).optional(),
@@ -233,6 +242,7 @@ export const WorkflowSchemas = {
     triggerConfig: jsonSchema.optional(),
     enabled: z.boolean().optional(),
     allowReentry: z.boolean().optional(),
+    tags: tagsArray.optional(),
   }),
   addStep: z.object({
     type: z.nativeEnum(WorkflowStepType),
@@ -260,13 +270,16 @@ export const WorkflowSchemas = {
   }),
   // Bulk operation payload for POST /workflows/bulk-update.
   //
-  // Currently the only supported operation is `delete: true` (bulk delete).
-  // Mirrors `TemplateSchemas.bulkUpdate` and is intentionally kept open-ended so
-  // future bulk operations (e.g. enable/disable) can stack onto the same
-  // endpoint without changing the request shape callers already depend on.
+  // Mirrors `TemplateSchemas.bulkUpdate`. Supported operations:
+  // - `delete: true` — bulk delete (guarded by the active-execution check).
+  // - `addTags` / `removeTags` — union/subtract the given tags on every selected
+  //   row, both applicable in one call, applied per-row inside the same
+  //   transaction.
   bulkUpdate: z.object({
     ids: z.array(uuid).min(1).max(1000),
     delete: z.boolean().optional(),
+    addTags: tagsArray.optional(),
+    removeTags: tagsArray.optional(),
   }),
 };
 

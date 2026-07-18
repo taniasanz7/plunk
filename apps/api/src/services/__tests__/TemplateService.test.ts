@@ -64,6 +64,44 @@ describe('TemplateService', () => {
 
       expect(template.type).toBe(TemplateType.MARKETING);
     });
+
+    it('should reject a malformed non-array tags payload instead of splitting it into characters', async () => {
+      await expect(
+        TemplateService.create(projectId, {
+          name: 'Malformed tags',
+          subject: 'Subject',
+          body: 'Body',
+          from: 'test@example.com',
+          tags: 'promo' as unknown as string[],
+        }),
+      ).rejects.toMatchObject({code: 400});
+
+      expect(await prisma.template.count({where: {projectId}})).toBe(0);
+    });
+
+    it('should reject more than 50 tags at the service boundary', async () => {
+      await expect(
+        TemplateService.create(projectId, {
+          name: 'Too many tags',
+          subject: 'Subject',
+          body: 'Body',
+          from: 'test@example.com',
+          tags: Array.from({length: 51}, (_, index) => `tag-${index}`),
+        }),
+      ).rejects.toMatchObject({code: 400});
+    });
+
+    it('should reject tags longer than 50 characters at the service boundary', async () => {
+      await expect(
+        TemplateService.create(projectId, {
+          name: 'Long tag',
+          subject: 'Subject',
+          body: 'Body',
+          from: 'test@example.com',
+          tags: ['x'.repeat(51)],
+        }),
+      ).rejects.toMatchObject({code: 400});
+    });
   });
 
   describe('get', () => {
@@ -206,6 +244,60 @@ describe('TemplateService', () => {
       const headlessResult = await TemplateService.list(projectId, 1, 20, undefined, TemplateType.HEADLESS);
       expect(headlessResult.total).toBe(1);
       expect(headlessResult.data[0].type).toBe(TemplateType.HEADLESS);
+    });
+
+    it('should filter templates by a single tag (back-compat string arg)', async () => {
+      const a = await factories.createTemplate({projectId, name: 'A'});
+      const b = await factories.createTemplate({projectId, name: 'B'});
+      await factories.createTemplate({projectId, name: 'C'}); // no tags
+      await prisma.template.update({where: {id: a.id}, data: {tags: {set: ['newsletter']}}});
+      await prisma.template.update({where: {id: b.id}, data: {tags: {set: ['promo']}}});
+
+      const result = await TemplateService.list(projectId, 1, 20, undefined, undefined, undefined, 'newsletter');
+
+      expect(result.total).toBe(1);
+      expect(result.data[0].id).toBe(a.id);
+    });
+
+    it('should filter templates by multiple tags with OR semantics (hasSome)', async () => {
+      const a = await factories.createTemplate({projectId, name: 'A'});
+      const b = await factories.createTemplate({projectId, name: 'B'});
+      const c = await factories.createTemplate({projectId, name: 'C'});
+      await factories.createTemplate({projectId, name: 'D'}); // no tags — excluded
+      await prisma.template.update({where: {id: a.id}, data: {tags: {set: ['newsletter']}}});
+      await prisma.template.update({where: {id: b.id}, data: {tags: {set: ['promo']}}});
+      await prisma.template.update({where: {id: c.id}, data: {tags: {set: ['promo', 'newsletter']}}});
+
+      // Matches any row carrying EITHER tag (a, b, c) — not the tagless one.
+      const result = await TemplateService.list(projectId, 1, 20, undefined, undefined, undefined, [
+        'newsletter',
+        'promo',
+      ]);
+
+      expect(result.total).toBe(3);
+      expect(result.data.map(t => t.id).sort()).toEqual([a.id, b.id, c.id].sort());
+    });
+
+    it('should not de-duplicate rows matching more than one selected tag', async () => {
+      const a = await factories.createTemplate({projectId, name: 'A'});
+      await prisma.template.update({where: {id: a.id}, data: {tags: {set: ['x', 'y']}}});
+
+      // A row carrying both selected tags must appear exactly once.
+      const result = await TemplateService.list(projectId, 1, 20, undefined, undefined, undefined, ['x', 'y']);
+
+      expect(result.total).toBe(1);
+      expect(result.data).toHaveLength(1);
+      expect(result.data[0].id).toBe(a.id);
+    });
+
+    it('should treat an empty tag array as no tag filter', async () => {
+      const a = await factories.createTemplate({projectId, name: 'A'});
+      await factories.createTemplate({projectId, name: 'B'});
+      await prisma.template.update({where: {id: a.id}, data: {tags: {set: ['only']}}});
+
+      const result = await TemplateService.list(projectId, 1, 20, undefined, undefined, undefined, []);
+
+      expect(result.total).toBe(2);
     });
 
     it('should combine search and type filters', async () => {
@@ -475,6 +567,70 @@ describe('TemplateService', () => {
       expect(result).toEqual({updated: 0});
       // No-op: the template is untouched.
       expect(await prisma.template.findUnique({where: {id: a.id}})).not.toBeNull();
+    });
+  });
+
+  describe('bulkUpdate (tags)', () => {
+    it('should add tags as a union (no duplicates) across selected templates', async () => {
+      const a = await factories.createTemplate({projectId});
+      const b = await factories.createTemplate({projectId});
+      // a already has "x"; the union must not duplicate it.
+      await prisma.template.update({where: {id: a.id}, data: {tags: {set: ['x']}}});
+
+      const result = await TemplateService.bulkUpdate(projectId, {ids: [a.id, b.id], addTags: ['x', 'y']});
+
+      expect(result.updated).toBe(2);
+      expect((await prisma.template.findUnique({where: {id: a.id}}))?.tags).toEqual(['x', 'y']);
+      expect((await prisma.template.findUnique({where: {id: b.id}}))?.tags).toEqual(['x', 'y']);
+    });
+
+    it('should subtract tags with removeTags (and ignore tags not present)', async () => {
+      const a = await factories.createTemplate({projectId});
+      await prisma.template.update({where: {id: a.id}, data: {tags: {set: ['keep', 'drop']}}});
+
+      const result = await TemplateService.bulkUpdate(projectId, {ids: [a.id], removeTags: ['drop', 'absent']});
+
+      expect(result.updated).toBe(1);
+      expect((await prisma.template.findUnique({where: {id: a.id}}))?.tags).toEqual(['keep']);
+    });
+
+    it('should apply addTags then removeTags in a single call', async () => {
+      const a = await factories.createTemplate({projectId});
+      await prisma.template.update({where: {id: a.id}, data: {tags: {set: ['old']}}});
+
+      const result = await TemplateService.bulkUpdate(projectId, {
+        ids: [a.id],
+        addTags: ['new'],
+        removeTags: ['old'],
+      });
+
+      expect(result.updated).toBe(1);
+      expect((await prisma.template.findUnique({where: {id: a.id}}))?.tags).toEqual(['new']);
+    });
+
+    it('should not count rows whose tags are unchanged', async () => {
+      const a = await factories.createTemplate({projectId});
+      await prisma.template.update({where: {id: a.id}, data: {tags: {set: ['x']}}});
+
+      // Adding a tag the row already has is a no-op for that row.
+      const result = await TemplateService.bulkUpdate(projectId, {ids: [a.id], addTags: ['x']});
+
+      expect(result.updated).toBe(0);
+      expect((await prisma.template.findUnique({where: {id: a.id}}))?.tags).toEqual(['x']);
+    });
+
+    it('should scope tag mutations to the project (cross-project ids are never touched)', async () => {
+      const {project: otherProject} = await factories.createUserWithProject();
+      const mine = await factories.createTemplate({projectId});
+      const foreign = await factories.createTemplate({projectId: otherProject.id});
+      await prisma.template.update({where: {id: foreign.id}, data: {tags: {set: ['untouched']}}});
+
+      const result = await TemplateService.bulkUpdate(projectId, {ids: [mine.id, foreign.id], addTags: ['x']});
+
+      // Only the in-project row is updated; the foreign row keeps its tags.
+      expect(result.updated).toBe(1);
+      expect((await prisma.template.findUnique({where: {id: mine.id}}))?.tags).toEqual(['x']);
+      expect((await prisma.template.findUnique({where: {id: foreign.id}}))?.tags).toEqual(['untouched']);
     });
   });
 

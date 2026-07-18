@@ -15,6 +15,7 @@ import type {Template} from '@plunk/db';
 import {DashboardLayout} from '../../components/DashboardLayout';
 import {EmailSettings} from '../../components/EmailSettings';
 import {EmailEditor} from '../../components/EmailEditor';
+import {TagInput} from '../../components/TagInput';
 import {network} from '../../lib/network';
 import {useChangeTracking} from '../../lib/hooks/useChangeTracking';
 import {ArrowLeft, Save, Trash2, TriangleAlert} from 'lucide-react';
@@ -52,12 +53,17 @@ export default function TemplateEditorPage() {
         fromName: template.fromName || '',
         replyTo: template.replyTo || '',
         type: template.type,
+        tags: template.tags ?? [],
       });
     }
   }, [template, editedTemplate]);
 
   const hasChanges = useMemo(() => {
     if (!template || Object.keys(editedTemplate).length === 0) return false;
+    const currentTags = editedTemplate.tags ?? [];
+    const savedTags = template.tags ?? [];
+    const tagsChanged =
+      currentTags.length !== savedTags.length || currentTags.some((t, i) => t !== savedTags[i]);
     return (
       editedTemplate.name !== template.name ||
       (editedTemplate.description || '') !== (template.description || '') ||
@@ -66,7 +72,8 @@ export default function TemplateEditorPage() {
       editedTemplate.from !== template.from ||
       (editedTemplate.fromName || '') !== (template.fromName || '') ||
       (editedTemplate.replyTo || '') !== (template.replyTo || '') ||
-      editedTemplate.type !== template.type
+      editedTemplate.type !== template.type ||
+      tagsChanged
     );
   }, [editedTemplate, template]);
 
@@ -87,6 +94,7 @@ export default function TemplateEditorPage() {
         fromName: editedTemplate.fromName || null,
         replyTo: editedTemplate.replyTo || null,
         type: editedTemplate.type,
+        tags: editedTemplate.tags ?? [],
       });
 
       // Silent save - no toast notification
@@ -169,6 +177,17 @@ export default function TemplateEditorPage() {
                     onChange={e => setEditedTemplate({...editedTemplate, description: e.target.value})}
                     placeholder="Sent to new subscribers"
                   />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="tags">Tags</Label>
+                  <TagInput
+                    id="tags"
+                    value={editedTemplate.tags ?? []}
+                    onChange={tags => setEditedTemplate({...editedTemplate, tags})}
+                    placeholder="Press Enter to add"
+                  />
+                  <p className="text-xs text-neutral-500">Use tags to organize and filter templates on the list view.</p>
                 </div>
               </CardContent>
             </Card>
