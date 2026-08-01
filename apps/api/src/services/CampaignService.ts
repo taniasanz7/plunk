@@ -94,13 +94,25 @@ export class CampaignService {
   public static async update(projectId: string, campaignId: string, data: UpdateCampaignData): Promise<Campaign> {
     const campaign = await this.get(projectId, campaignId);
 
-    // Can only update draft or scheduled campaigns
-    if (campaign.status !== CampaignStatus.DRAFT && campaign.status !== CampaignStatus.SCHEDULED) {
+    // Sent campaigns are immutable except for their internal name.
+    const {name, ...otherFields} = data;
+    const normalizedSentName = campaign.status === CampaignStatus.SENT ? name?.trim() : undefined;
+    const isSentNameOnlyUpdate =
+      normalizedSentName !== undefined &&
+      normalizedSentName.length > 0 &&
+      Object.values(otherFields).every(value => value === undefined);
+
+    if (
+      campaign.status !== CampaignStatus.DRAFT &&
+      campaign.status !== CampaignStatus.SCHEDULED &&
+      !isSentNameOnlyUpdate
+    ) {
       throw new HttpException(400, 'Cannot update campaign that is sending or has been sent');
     }
 
     // Build base update data using shared utility
-    const updateData: Prisma.CampaignUpdateInput = buildEmailFieldsUpdate(data) as Prisma.CampaignUpdateInput;
+    const normalizedData = isSentNameOnlyUpdate ? {...data, name: normalizedSentName} : data;
+    const updateData: Prisma.CampaignUpdateInput = buildEmailFieldsUpdate(normalizedData) as Prisma.CampaignUpdateInput;
 
     // Handle campaign-specific fields
     if (data.type !== undefined) {

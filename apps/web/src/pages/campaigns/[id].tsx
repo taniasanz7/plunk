@@ -110,6 +110,7 @@ export default function CampaignDetailsPage() {
   const [scheduledDateTime, setScheduledDateTime] = useState('');
   const [selectedPreset, setSelectedPreset] = useState<string | null>(null);
   const [testEmailAddress, setTestEmailAddress] = useState('');
+  const [sentCampaignName, setSentCampaignName] = useState('');
 
   type CampaignDialog =
     | {type: 'none'}
@@ -213,6 +214,23 @@ export default function CampaignDetailsPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [hasChanges, setHasChanges] = useState(false);
 
+  const handleSentNameSave = async () => {
+    const name = sentCampaignName.trim();
+    if (!name || name === campaign?.data.name) return;
+
+    setIsSubmitting(true);
+    try {
+      await network.fetch<Campaign, typeof CampaignSchemas.update>('PUT', `/campaigns/${id}`, {name});
+      const updated = await mutate();
+      setSentCampaignName(updated?.data.name ?? name);
+      toast.success('Campaign name updated');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to update campaign name');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   const handleSave = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     setIsSubmitting(true);
@@ -254,6 +272,12 @@ export default function CampaignDetailsPage() {
       setIsSubmitting(false);
     }
   };
+
+  useEffect(() => {
+    if (campaign?.data.status === CampaignStatus.SENT) {
+      setSentCampaignName(campaign.data.name);
+    }
+  }, [campaign?.data.name, campaign?.data.status]);
 
   // Initialize edit fields when campaign loads and is a draft
   useEffect(() => {
@@ -972,7 +996,28 @@ export default function CampaignDetailsPage() {
             </Button>
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2 sm:gap-3 mb-2">
-                <h1 className="text-2xl sm:text-3xl font-bold text-neutral-900 truncate">{c.name}</h1>
+                {c.status === CampaignStatus.SENT ? (
+                  <>
+                    <Input
+                      aria-label="Campaign name"
+                      value={sentCampaignName}
+                      onChange={event => setSentCampaignName(event.target.value)}
+                      className="max-w-xl text-2xl sm:text-3xl font-bold h-auto py-1"
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={handleSentNameSave}
+                      disabled={!sentCampaignName.trim() || sentCampaignName.trim() === c.name || isSubmitting}
+                    >
+                      <Save className="h-4 w-4" />
+                      {isSubmitting ? 'Saving...' : 'Save'}
+                    </Button>
+                  </>
+                ) : (
+                  <h1 className="text-2xl sm:text-3xl font-bold text-neutral-900 truncate">{c.name}</h1>
+                )}
                 {getStatusBadge(c.status)}
               </div>
               {c.description && <p className="text-neutral-500 text-sm sm:text-base">{c.description}</p>}

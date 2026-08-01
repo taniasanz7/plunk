@@ -96,13 +96,40 @@ describe('CampaignService', () => {
       expect(updated.subject).toBe('Updated Subject');
     });
 
-    it('should throw error when updating non-draft campaign', async () => {
+    it('should update the name of a sent campaign', async () => {
+      const campaign = await factories.createCampaign({
+        projectId,
+        name: 'Original Name',
+        status: CampaignStatus.SENT,
+      });
+
+      const updated = await CampaignService.update(projectId, campaign.id, {name: '  Updated Name  '});
+
+      expect(updated.name).toBe('Updated Name');
+    });
+
+    it('should reject a blank name for a sent campaign', async () => {
+      const campaign = await factories.createCampaign({
+        projectId,
+        name: 'Original Name',
+        status: CampaignStatus.SENT,
+      });
+
+      await expect(CampaignService.update(projectId, campaign.id, {name: '   '})).rejects.toThrow(
+        'Cannot update campaign that is sending or has been sent',
+      );
+
+      const unchanged = await prisma.campaign.findUniqueOrThrow({where: {id: campaign.id}});
+      expect(unchanged.name).toBe('Original Name');
+    });
+
+    it('should not update sent campaign content', async () => {
       const campaign = await factories.createCampaign({
         projectId,
         status: CampaignStatus.SENT,
       });
 
-      await expect(CampaignService.update(projectId, campaign.id, {name: 'New Name'})).rejects.toThrow(
+      await expect(CampaignService.update(projectId, campaign.id, {subject: 'New Subject'})).rejects.toThrow(
         'Cannot update campaign that is sending or has been sent',
       );
     });
