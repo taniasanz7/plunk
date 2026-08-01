@@ -6695,6 +6695,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@types/html-to-text@npm:^9":
+  version: 9.0.4
+  resolution: "@types/html-to-text@npm:9.0.4"
+  checksum: 10c0/8e0e548f280d1c1107f70db01ff6331a295f3097f535f4d07c30ced271818fc3803a8f03bb2117c1207c46a3d40da256a03a17bd05fc9f5f1b4821c5bcbf98d8
+  languageName: node
+  linkType: hard
+
 "@types/http-errors@npm:*":
   version: 2.0.5
   resolution: "@types/http-errors@npm:2.0.5"
@@ -7930,6 +7937,7 @@ __metadata:
     "@types/cors": "npm:^2.8.17"
     "@types/express": "npm:^5.0.5"
     "@types/helmet": "npm:^4.0.0"
+    "@types/html-to-text": "npm:^9"
     "@types/jsonwebtoken": "npm:^9.0.6"
     "@types/mailparser": "npm:^3.4.6"
     "@types/morgan": "npm:^1.9.9"
@@ -7948,6 +7956,7 @@ __metadata:
     dotenv: "npm:^17.2.3"
     express: "npm:^5.1.0"
     helmet: "npm:^8.1.0"
+    html-to-text: "npm:9.0.5"
     ioredis: "npm:^5.8.2"
     jsonwebtoken: "npm:^9.0.2"
     mailchecker: "npm:^6.0.19"

@@ -1,4 +1,5 @@
 import {SES} from '@aws-sdk/client-ses';
+import {convert} from 'html-to-text';
 import signale from 'signale';
 
 import {
@@ -80,6 +81,21 @@ function breakLongLines(input: string, maxLineLength: number, isBase64 = false):
   }
 }
 
+function htmlToPlainText(html: string) {
+  return convert(html, {
+    wordwrap: false,
+    selectors: [
+      {selector: 'img', format: 'skip'},
+      {selector: '[style*="display:none"]', format: 'skip'},
+      {selector: '[style*="display: none"]', format: 'skip'},
+    ],
+  });
+}
+
+function encodeBase64MimeText(input: string) {
+  return breakLongLines(Buffer.from(input, 'utf8').toString('base64'), 76, true);
+}
+
 /**
  * Send a raw email via AWS SES with full MIME formatting
  */
@@ -158,6 +174,11 @@ Content-Type: ${rootContentType}${extraHeaders}
 
   // The alternative part content (always contains HTML)
   rawMessage += `--${altBoundary}
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: base64
+
+${encodeBase64MimeText(htmlToPlainText(content.html))}
+--${altBoundary}
 Content-Type: text/html; charset=utf-8
 Content-Transfer-Encoding: 7bit
 
