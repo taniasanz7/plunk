@@ -1,5 +1,5 @@
 import {describe, expect, it} from 'vitest';
-import {detectCustomHtmlPatterns} from '../emailStyles';
+import {detectCustomHtmlPatterns, wrapEmailWithStyles} from '../emailStyles';
 
 describe('detectCustomHtmlPatterns', () => {
   describe('empty / whitespace input', () => {
@@ -122,5 +122,37 @@ describe('detectCustomHtmlPatterns', () => {
       expect(detectCustomHtmlPatterns('<iframe src="x"></iframe>')).toBe(true);
       expect(detectCustomHtmlPatterns('<svg><circle /></svg>')).toBe(true);
     });
+  });
+});
+
+describe('wrapEmailWithStyles', () => {
+  it('wraps custom HTML fragments in a minimal document shell without prose styles', () => {
+    const html = wrapEmailWithStyles('<div style="color: red"><table><tr><td>x</td></tr></table></div>');
+
+    expect(html).toBe(`<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+</head>
+<body>
+<div style="color: red"><table><tr><td>x</td></tr></table></div>
+</body>
+</html>`);
+    expect(html).not.toContain('class="prose prose-sm max-w-none"');
+    expect(html).not.toContain('Tailwind Typography');
+  });
+
+  it('preserves complete custom HTML documents byte-for-byte', () => {
+    const document =
+      '<!doctype html><html><head><style>td{color:red}</style></head><body><table><tr><td>x</td></tr></table></body></html>';
+
+    expect(wrapEmailWithStyles(document)).toBe(document);
+  });
+
+  it('preserves complete HTML documents even when the body only contains visual-editor markup', () => {
+    const document = '<!doctype html><html><head><title>x</title></head><body><p>Hello</p></body></html>';
+
+    expect(wrapEmailWithStyles(document)).toBe(document);
   });
 });

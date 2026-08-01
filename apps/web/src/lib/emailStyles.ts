@@ -55,9 +55,26 @@ export const detectCustomHtmlPatterns = (html: string): boolean => {
   return hasCustomClasses || hasCustomAttributes || hasCustomElements || hasMediaQueries || hasStyleTags;
 };
 
+const hasHtmlDocumentElement = (html: string): boolean => /<html(?:\s|>)/i.test(html);
+
+const wrapCustomHtmlFragmentWithDocument = (htmlBody: string): string => `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+</head>
+<body>
+${htmlBody}
+</body>
+</html>`;
+
 export const wrapEmailWithStyles = (htmlBody: string): string => {
-  if (detectCustomHtmlPatterns(htmlBody)) {
+  if (hasHtmlDocumentElement(htmlBody)) {
     return htmlBody;
+  }
+
+  if (detectCustomHtmlPatterns(htmlBody)) {
+    return wrapCustomHtmlFragmentWithDocument(htmlBody);
   }
 
   return `<!DOCTYPE html>

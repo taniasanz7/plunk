@@ -716,6 +716,23 @@ export class EmailService {
     return hasCustomClasses || hasCustomAttributes || hasCustomElements || hasMediaQueries || hasStyleTags;
   }
 
+  private static hasHtmlDocumentElement(html: string): boolean {
+    return /<html(?:\s|>)/i.test(html);
+  }
+
+  private static wrapCustomHtmlFragmentWithDocument(htmlBody: string): string {
+    return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+</head>
+<body>
+${htmlBody}
+</body>
+</html>`;
+  }
+
   /**
    * Wraps visual editor content with a full HTML document and prose styles.
    * Mirrors wrapEmailWithStyles() in apps/web/src/lib/emailStyles.ts so sent emails
@@ -1064,8 +1081,12 @@ export class EmailService {
     includeUnsubscribe?: boolean;
   }): string {
     // Wrap visual editor content with prose styles so the sent email matches the preview modal.
-    // Custom HTML (from the HTML editor) already carries its own styles and is used as-is.
-    let html = this.detectCustomHtmlPatterns(content) ? content : this.wrapWithEmailStyles(content);
+    // Complete custom documents are used as-is; custom fragments get a valid document shell.
+    let html = this.hasHtmlDocumentElement(content)
+      ? content
+      : this.detectCustomHtmlPatterns(content)
+        ? this.wrapCustomHtmlFragmentWithDocument(content)
+        : this.wrapWithEmailStyles(content);
 
     const unsubscribeHtml = includeUnsubscribe
       ? (() => {
@@ -1140,8 +1161,9 @@ export class EmailService {
     const footerHtml = `${unsubscribeHtml}${badgeHtml}`;
 
     // Insert before closing body tag if it exists, otherwise append
-    if (html.includes('</body>')) {
-      html = html.replace('</body>', `${footerHtml}</body>`);
+    const closingBodyTag = /<\/body>/i;
+    if (closingBodyTag.test(html)) {
+      html = html.replace(closingBodyTag, match => `${footerHtml}${match}`);
     } else {
       html = `${html}${footerHtml}`;
     }
