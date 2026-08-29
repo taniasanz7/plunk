@@ -1,4 +1,4 @@
-import {beforeEach, describe, expect, it, vi} from 'vitest';
+import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 
 import {renderEngine} from '../template/engine.js';
 import {clearTemplateCache, compileTemplate, renderTemplate, validateTemplate} from '../template/index.js';
@@ -12,6 +12,11 @@ import {clearTemplateCache, compileTemplate, renderTemplate, validateTemplate} f
 describe('renderTemplate', () => {
   beforeEach(() => {
     clearTemplateCache();
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+    vi.useRealTimers();
   });
 
   // ========================================
@@ -215,6 +220,74 @@ describe('renderTemplate', () => {
       expect(renderTemplate('{{signupDate | date: "%Y-%m"}}', {signupDate: '2026-05-06T12:00:00Z'})).toBe('2026-05');
     });
 
+    describe('weekday date filters', () => {
+      it('advances to today or the next matching weekday', () => {
+        const template = '{{ ref | advance_date_to_next: "monday" | date: "%Y-%m-%d" }}';
+
+        expect(renderTemplate(template, {ref: '2026-05-13T10:15:00.000Z'})).toBe('2026-05-18');
+      });
+
+      it('keeps the same weekday for advance_date_to_next', () => {
+        const template = '{{ ref | advance_date_to_next: "WEDNESDAY" | date: "%Y-%m-%d" }}';
+
+        expect(renderTemplate(template, {ref: '2026-05-13T10:15:00.000Z'})).toBe('2026-05-13');
+      });
+
+      it('always moves to a future weekday for next_occurrence_of', () => {
+        const template = '{{ ref | next_occurrence_of: "wednesday" | date: "%Y-%m-%d" }}';
+
+        expect(renderTemplate(template, {ref: '2026-05-13T10:15:00.000Z'})).toBe('2026-05-20');
+      });
+
+      it('treats Liquid today as the current date for weekday filters', () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date('2026-05-13T10:15:00.000Z'));
+
+        expect(renderTemplate('{{ ref | advance_date_to_next: "monday" | date: "%Y-%m-%d" }}', {ref: 'today'})).toBe(
+          '2026-05-18',
+        );
+        expect(
+          renderTemplate('{{ ref | advance_date_to_next: "wednesday" | date: "%Y-%m-%d" }}', {ref: 'today'}),
+        ).toBe('2026-05-13');
+        expect(renderTemplate('{{ ref | next_occurrence_of: "monday" | date: "%Y-%m-%d" }}', {ref: 'today'})).toBe(
+          '2026-05-18',
+        );
+        expect(renderTemplate('{{ ref | next_occurrence_of: "wednesday" | date: "%Y-%m-%d" }}', {ref: 'today'})).toBe(
+          '2026-05-20',
+        );
+      });
+
+      it('works in date pipelines that preserve timezone-derived instants and epoch formatting', () => {
+        const template = '{{ ref | next_occurrence_of: "monday" | date: "%Y-%m-%d|%s" }}';
+
+        expect(renderTemplate(template, {ref: '2026-05-13T12:15:00.000+02:00'})).toBe('2026-05-18|1779099300');
+      });
+
+      it('matches Liquid date semantics for numeric Unix epoch seconds', () => {
+        const template = '{{ ref | next_occurrence_of: "monday" | date: "%A %Y-%m-%d" }}';
+
+        expect(renderTemplate(template, {ref: 1778667300})).toBe('Monday 2026-05-18');
+      });
+
+      it('matches Liquid date semantics for numeric-string Unix epoch seconds', () => {
+        const template = '{{ ref | next_occurrence_of: "monday" | date: "%A %Y-%m-%d" }}';
+
+        expect(renderTemplate(template, {ref: '1778667300'})).toBe('Monday 2026-05-18');
+      });
+
+      it('passes invalid weekday names and invalid dates through unchanged', () => {
+        expect(renderTemplate('{{ ref | advance_date_to_next: "funday" }}', {ref: '2026-05-13'})).toBe('2026-05-13');
+        expect(renderTemplate('{{ ref | next_occurrence_of: "monday" }}', {ref: 'not-a-date'})).toBe('not-a-date');
+      });
+
+      it('preserves nullable and boolean inputs instead of coercing them to epoch dates', () => {
+        expect(renderTemplate('{{ ref | advance_date_to_next: "monday" }}', {ref: null})).toBe('');
+        expect(renderTemplate('{{ ref | next_occurrence_of: "monday" }}', {ref: null})).toBe('');
+        expect(renderTemplate('{{ ref | advance_date_to_next: "monday" }}', {ref: false})).toBe('false');
+        expect(renderTemplate('{{ ref | next_occurrence_of: "monday" }}', {ref: false})).toBe('false');
+      });
+    });
+
     it('skips an unknown filter rather than failing the send', () => {
       expect(renderTemplate('{{name | upcse}}', {name: 'ada'})).toBe('ada');
     });
@@ -292,6 +365,12 @@ describe('renderTemplate', () => {
 
     it('does not expose prototype members of contact data', () => {
       expect(renderTemplate('[{{profile.constructor}}][{{profile.__proto__}}]', {profile: {}})).toBe('[][]');
+    });
+
+    it('does not expose prototype members from the legacy fallback path', () => {
+      expect(renderTemplate('[{{profile.constructor}}][{{profile.__proto__}}] {% if %}', {profile: {}})).toBe(
+        '[][] {% if %}',
+      );
     });
 
     it('aborts a runaway loop instead of blocking the worker', () => {
@@ -439,6 +518,11 @@ describe('validateTemplate', () => {
 
     expect(result.valid).toBe(false);
     expect(result.error).toContain('upcse');
+  });
+
+  it('accepts Plunk weekday date filters under strict validation', () => {
+    expect(validateTemplate('{{ ref | advance_date_to_next: "monday" | date: "%Y-%m-%d" }}')).toEqual({valid: true});
+    expect(validateTemplate('{{ ref | next_occurrence_of: "monday" | date: "%Y-%m-%d" }}')).toEqual({valid: true});
   });
 
   it('reports an unknown tag', () => {

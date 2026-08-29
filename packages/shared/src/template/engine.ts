@@ -8,6 +8,7 @@ import {Liquid} from 'liquidjs';
  * replace the tags, so authors get a clear message instead of a confusing ENOENT.
  */
 const BLOCKED_TAGS = ['include', 'render', 'layout'] as const;
+const WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'] as const;
 
 /**
  * DoS ceilings. Templates are user input and are rendered once per recipient, so a
@@ -45,6 +46,51 @@ function renderArrayAsListItems(value: unknown): string {
   return value.map(item => `<li>${item ?? ''}</li>`).join('\n');
 }
 
+function dateFromInput(input: unknown): Date | undefined {
+  if (input === 'now' || input === 'today') {
+    return new Date();
+  }
+
+  if (input === null || typeof input === 'boolean') {
+    return undefined;
+  }
+
+  const date =
+    typeof input === 'number'
+      ? new Date(input * 1000)
+      : typeof input === 'string' && /^\d+$/.test(input)
+        ? new Date(Number(input) * 1000)
+        : input instanceof Date
+          ? new Date(input.getTime())
+          : new Date(input as string);
+  return Number.isNaN(date.getTime()) ? undefined : date;
+}
+
+function advanceToWeekday(input: unknown, dayName: unknown, strictlyNext: boolean): string | unknown {
+  const target = WEEKDAYS.indexOf(String(dayName).toLowerCase() as (typeof WEEKDAYS)[number]);
+  if (target < 0) {
+    return input;
+  }
+
+  const date = dateFromInput(input);
+  if (!date) {
+    return input;
+  }
+
+  const offset = (target - date.getDay() + 7) % 7;
+  date.setDate(date.getDate() + (strictlyNext && offset === 0 ? 7 : offset));
+  return date.toISOString();
+}
+
+function registerPlunkFilters(engine: Liquid): void {
+  engine.registerFilter('advance_date_to_next', (input: unknown, dayName: unknown) =>
+    advanceToWeekday(input, dayName, false),
+  );
+  engine.registerFilter('next_occurrence_of', (input: unknown, dayName: unknown) =>
+    advanceToWeekday(input, dayName, true),
+  );
+}
+
 function createEngine({strictFilters}: {strictFilters: boolean}): Liquid {
   const engine = new Liquid({
     // No file system access whatsoever — see BLOCKED_TAGS.
@@ -66,6 +112,8 @@ function createEngine({strictFilters}: {strictFilters: boolean}): Liquid {
     memoryLimit: TEMPLATE_MEMORY_LIMIT,
     outputEscape: renderArrayAsListItems,
   });
+
+  registerPlunkFilters(engine);
 
   for (const name of BLOCKED_TAGS) {
     engine.registerTag(name, {

@@ -11,6 +11,10 @@
  * Supports `{{variable}}`, `{{variable ?? defaultValue}}` and nested access
  * (`{{data.firstName}}`).
  */
+function hasOwn(value: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
 export function renderLegacyTemplate(template: string, variables: Record<string, unknown>): string {
   return template.replace(/\{\{(.*?)\}\}/g, (_match, key) => {
     const [mainKey, defaultValue] = key.split('??').map((s: string) => s.trim());
@@ -19,17 +23,26 @@ export function renderLegacyTemplate(template: string, variables: Record<string,
     const getValue = (obj: Record<string, unknown>, path: string): unknown => {
       return path.split('.').reduce((current: Record<string, unknown> | unknown, segment) => {
         if (current && typeof current === 'object' && !Array.isArray(current)) {
-          return (current as Record<string, unknown>)[segment];
+          const record = current as Record<string, unknown>;
+          return hasOwn(record, segment) ? record[segment] : undefined;
         }
         return undefined;
       }, obj);
     };
 
+    const getOwnValue = (obj: unknown, path: string): unknown => {
+      if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+        const record = obj as Record<string, unknown>;
+        return hasOwn(record, path) ? record[path] : undefined;
+      }
+      return undefined;
+    };
+
     // Try multiple lookup strategies
     const value =
       getValue(variables, mainKey) || // Try as nested path (e.g., data.firstName)
-      variables[mainKey] || // Try as top-level property
-      (variables.data as Record<string, unknown>)?.[mainKey]; // Try in data object
+      getOwnValue(variables, mainKey) || // Try as top-level property
+      getOwnValue(variables.data, mainKey); // Try in data object
 
     // Handle array values (for lists)
     if (Array.isArray(value)) {
