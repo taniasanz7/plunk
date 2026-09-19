@@ -93,7 +93,7 @@ export const ProjectSchemas = {
 export const ContactSchemas = {
   create: z.object({
     email,
-    subscribed: z.boolean().default(true),
+    subscribed: z.boolean().optional(),
     data: jsonSchema.optional(),
   }),
   bulkAction: z.discriminatedUnion('mode', [
